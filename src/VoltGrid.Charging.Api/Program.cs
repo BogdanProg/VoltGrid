@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using VoltGrid.Infrastructure.Persistence;
+using VoltGrid.Infrastructure.Persistence.Seeding;
+
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -13,9 +15,12 @@ builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<VoltGridDbContext>();
+    await DevDataSeeder.SeedAsync(db);
+    
     app.MapOpenApi();
 }
 
