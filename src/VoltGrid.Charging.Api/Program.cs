@@ -1,7 +1,14 @@
+using Microsoft.EntityFrameworkCore;
+using VoltGrid.Infrastructure.Persistence;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
+var connectionString = builder.Configuration.GetConnectionString("Postgres")
+    ?? throw new InvalidOperationException("Connection string 'Postgres' not found");
+
+builder.Services.AddDbContext<VoltGridDbContext>(options =>
+    options.UseNpgsql(connectionString));
+
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
