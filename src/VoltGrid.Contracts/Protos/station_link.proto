@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package voltgrid.station.v1;
+
+option csharp_namespace = "VoltGrid.Contracts.Station.V1";
+
+service StationLink {
+  rpc Connect(stream StationMessage) returns (stream ServerMessage);
+}
+
+message StationMessage{
+  string message_id = 1;
+  oneof payload{
+    BootNotification boot_notification = 2;
+  }
+}
+
+message ServerMessage{
+  string message_id = 1;
+  oneof payload{
+    BootNotificationResponse boot_notification_response = 2;
+  }
+}
+
+message BootNotification{}
+message BootNotificationResponse{}
