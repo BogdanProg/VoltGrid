@@ -17,20 +17,35 @@ public class StationLinkService : StationLink.StationLinkBase
         IServerStreamWriter<ServerMessage> responseStream, ServerCallContext context)
     {
         try
-            {
-                await foreach (var message in requestStream.ReadAllAsync(context.CancellationToken))
-                {
-                    _logger.LogInformation(
-                        "Message {MessageId} received, payload {PayloadCase}",
-                        message.MessageId,
-                        message.PayloadCase);
-                }
-
-                _logger.LogInformation("Station closed the stream");
-            }
-        catch(IOException ex)
         {
-                _logger.LogWarning("Station connection lost: {Reason}", ex.Message);    
+            await foreach (var message in requestStream.ReadAllAsync(context.CancellationToken))
+            {
+                _logger.LogInformation(
+                    "Message {MessageId} received, payload {PayloadCase}",
+                    message.MessageId,
+                    message.PayloadCase);
+                switch (message.PayloadCase)
+                {
+                    case StationMessage.PayloadOneofCase.BootNotification:
+                        _logger.LogInformation("Boot notification received");
+                        var response = new ServerMessage
+                        {
+                            MessageId = message.MessageId,
+                            BootNotificationResponse = new BootNotificationResponse()
+                        };
+                        await responseStream.WriteAsync(response);
+                        break;
+                    default:
+                        _logger.LogWarning("Unsupported payload {PayloadCase} in message {MessageId}", message.PayloadCase, message.MessageId);
+                        break;
+                }
+            }
+
+            _logger.LogInformation("Station closed the stream");
+        }
+        catch (IOException ex)
+        {
+            _logger.LogWarning("Station connection lost: {Reason}", ex.Message);
         }
         finally
         {

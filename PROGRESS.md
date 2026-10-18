@@ -11,15 +11,19 @@
 - [x] Етап 2.1 — `.proto` контракт, кодогенерація, порожній gRPC-сервіс
 
 ## Останній робочий стан
-Контракт `src/VoltGrid.Contracts/Protos/station_link.proto` (`package voltgrid.station.v1`):
-конверти `StationMessage` / `ServerMessage` з полем кореляції `message_id = 1` поза `oneof payload`.
-Поки один варіант з кожного боку: `BootNotification` / `BootNotificationResponse` (обидва порожні).
+Етап 2.2: готові концепти 1–2 з 6 (цикл читання; диспетчеризація і відповідь).
 
-Кодогенерація один раз у `VoltGrid.Contracts` (`GrpcServices="Both"`), Gateway посилається на проєкт.
-`StationLinkService` у Gateway: `Connect` повертає `Task.CompletedTask`.
+`StationLinkService.Connect` у Gateway:
+- цикл `await foreach` по `requestStream.ReadAllAsync(context.CancellationToken)`; повідомлення однієї станції обробляються строго по черзі;
+- лог на кожне повідомлення з `{MessageId}` і `{PayloadCase}`;
+- `switch` за `PayloadCase`: `BootNotification` → відповідь `ServerMessage` з тим самим `message_id` і порожнім `BootNotificationResponse`; `default` → Warning «Unsupported payload»;
+- `catch (IOException)` → Warning «Station connection lost» одним рядком, без траси стека;
+- `finally` → місце для прибирання (етап 9.1: видалити станцію з реєстру Redis).
 
-Перевірено через grpcurl на `localhost:5205` (HTTP/2 без TLS):
-без перевизначення `Connect` — `Unimplemented`, з порожнім перевизначенням — OK.
+Перевірено grpcurl з `-d @` на `localhost:5205`: штатне закриття (control+D), обрив (control+C), відповідь на boot з `messageId: "1"`.
+
+Наступне: концепт 3 — ідентичність станції (метадані виклику чи перше повідомлення).
+Відкрите питання для концепту 5: неперехоплений виняток в обробці одного повідомлення обриває весь стрім станції.
 
 ## Де застряг
 —
@@ -32,5 +36,7 @@
 - Видалити шаблонний `Class1.cs` з `VoltGrid.Application`
 - `git push` з терміналу через GitHub CLI (`gh auth login`); у `bogdannalapko` немає sudo, тож `brew install gh` з адмін-акаунта
 - Контракт: варіант відповіді «не знаю такої команди» (аналог OCPP `NotImplemented`), додати разом із першою командою від Gateway
-- Перевірити, що `Station.Simulator` має `ProjectReference` на Contracts і пакет `Grpc.Net.Client` (знадобиться на 3.1)
+- `Station.Simulator`: `ProjectReference` на Contracts є, бракує пакета `Grpc.Net.Client` (знадобиться на 3.1)
 - README: свідоме обмеження — станції не автентифікуються (ідентичність береться з з'єднання, без перевірки)
+- Вирівняти версії gRPC-пакетів (Gateway `Grpc.AspNetCore` 2.64.0 vs Contracts 2.84.0); розглянути `Grpc.AspNetCore.Server` замість метапакета
+- Розглянути `WarningsAsErrors` для CA2017 у Gateway, щоб невідповідність плейсхолдерів у логах ламала збірку, а не стрім
