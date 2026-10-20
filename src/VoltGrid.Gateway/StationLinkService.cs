@@ -15,19 +15,26 @@ public class StationLinkService : StationLink.StationLinkBase
     public override async Task Connect(
         IAsyncStreamReader<StationMessage> requestStream,
         IServerStreamWriter<ServerMessage> responseStream, ServerCallContext context)
-    {
+    {   
+        var stationId = context.RequestHeaders.GetValue("station-id");
+        if (string.IsNullOrWhiteSpace(stationId))
+        {
+            _logger.LogWarning("Stream rejected: missing station-id header, peer {Peer}", context.Peer);
+            throw new RpcException(new Status(StatusCode.Unauthenticated, "station-id is required"));
+        }
         try
         {
             await foreach (var message in requestStream.ReadAllAsync(context.CancellationToken))
             {
                 _logger.LogInformation(
-                    "Message {MessageId} received, payload {PayloadCase}",
+                    "Message {MessageId} from {StationId} received, payload {PayloadCase}",
                     message.MessageId,
+                    stationId,
                     message.PayloadCase);
                 switch (message.PayloadCase)
                 {
                     case StationMessage.PayloadOneofCase.BootNotification:
-                        _logger.LogInformation("Boot notification received");
+                        _logger.LogInformation("Boot notification received from {StationId}", stationId);
                         var response = new ServerMessage
                         {
                             MessageId = message.MessageId,
@@ -36,20 +43,20 @@ public class StationLinkService : StationLink.StationLinkBase
                         await responseStream.WriteAsync(response);
                         break;
                     default:
-                        _logger.LogWarning("Unsupported payload {PayloadCase} in message {MessageId}", message.PayloadCase, message.MessageId);
+                        _logger.LogWarning("Unsupported payload {PayloadCase} in message {MessageId} from {StationId}", message.PayloadCase, message.MessageId, stationId);
                         break;
                 }
             }
 
-            _logger.LogInformation("Station closed the stream");
+            _logger.LogInformation("Station {StationId} closed the stream", stationId);
         }
         catch (IOException ex)
         {
-            _logger.LogWarning("Station connection lost: {Reason}", ex.Message);
+            _logger.LogWarning("Station {StationId} connection lost: {Reason}",  stationId, ex.Message);
         }
         finally
         {
-            _logger.LogInformation("Stream cleanup"); //Later will remove the station from Redis
+            _logger.LogInformation("Stream cleanup {StationId}", stationId); //Later will remove the station from Redis
         }
     }
 }

@@ -11,18 +11,21 @@
 - [x] Етап 2.1 — `.proto` контракт, кодогенерація, порожній gRPC-сервіс
 
 ## Останній робочий стан
-Етап 2.2: готові концепти 1–2 з 6 (цикл читання; диспетчеризація і відповідь).
+Етап 2.2: готові концепти 1–3 з 6 (цикл читання; диспетчеризація і відповідь; ідентичність станції).
 
 `StationLinkService.Connect` у Gateway:
+- на старті читає заголовок `station-id` з `context.RequestHeaders`; без нього Warning з `{Peer}` і `RpcException(StatusCode.Unauthenticated)`, до `try`;
 - цикл `await foreach` по `requestStream.ReadAllAsync(context.CancellationToken)`; повідомлення однієї станції обробляються строго по черзі;
-- лог на кожне повідомлення з `{MessageId}` і `{PayloadCase}`;
 - `switch` за `PayloadCase`: `BootNotification` → відповідь `ServerMessage` з тим самим `message_id` і порожнім `BootNotificationResponse`; `default` → Warning «Unsupported payload»;
-- `catch (IOException)` → Warning «Station connection lost» одним рядком, без траси стека;
-- `finally` → місце для прибирання (етап 9.1: видалити станцію з реєстру Redis).
+- `catch (IOException)` → Warning «connection lost» одним рядком, без траси стека;
+- `finally` → місце для прибирання (етап 9.1: видалити станцію з реєстру Redis);
+- усі логи містять `{StationId}`.
 
-Перевірено grpcurl з `-d @` на `localhost:5205`: штатне закриття (control+D), обрив (control+C), відповідь на boot з `messageId: "1"`.
+Перевірка grpcurl (з кореня репозиторію):
+grpcurl -plaintext -import-path src/VoltGrid.Contracts/Protos -proto station_link.proto -H 'station-id: ST-001' -d @ localhost:5205 voltgrid.station.v1.StationLink/Connect
+Без `-H` → `Unauthenticated`. Із `-H`: штатне закриття (control+D), обрив (control+C), відповідь на boot з `messageId: "1"`.
 
-Наступне: концепт 3 — ідентичність станції (метадані виклику чи перше повідомлення).
+Наступне: концепт 4 — зміст `BootNotification` і відповіді (поля, Accepted / Rejected, інтервал Heartbeat).
 Відкрите питання для концепту 5: неперехоплений виняток в обробці одного повідомлення обриває весь стрім станції.
 
 ## Де застряг

@@ -70,3 +70,30 @@ different totals on different days. Receipts and invoices work the same way.
 **Cost.** Time-of-use tariffs are not supported: a customer pays the start-time
 price even for kWh consumed after the change. Splitting consumption across
 pricing periods is a separate billing problem, deliberately out of scope.
+---
+
+## 4. Station identity comes from call metadata, not from BootNotification
+
+**Date:** 2026-10-20 (stage 2.2)
+
+**Context.** Gateway must know which station is on the other end of a stream.
+Two options: a `station-id` header sent when the stream is opened, or a
+`station_id` field inside `BootNotification`. A station sends BootNotification
+only after it boots, not after every reconnect: when LTE drops for 10 seconds,
+the station opens a new stream and goes straight to Heartbeat.
+
+**Decision.** Identity is a property of the connection. The station sends
+`station-id` in gRPC call metadata; Gateway reads it from
+`context.RequestHeaders` at the start of `Connect`, before the first message.
+A stream without the header is rejected with `Unauthenticated`. Messages carry
+no `station_id` field.
+
+**Reasoning.** Identity arrives with every connection (every reconnect), not
+with every boot (rare). With BootNotification-based identity, a reconnected
+stream would stay anonymous for hours. A field that is not in the message
+cannot contradict the stream it arrived on. OCPP-J does the same: the charge
+point identity is part of the WebSocket URL.
+
+**Cost.** The header is only a claim: Gateway does not verify that the station
+really is ST-001 (no authentication, a documented limitation). Every client,
+including test tools like grpcurl, must send the header.
