@@ -22,5 +22,18 @@ message ServerMessage{
   }
 }
 
-message BootNotification{}
-message BootNotificationResponse{}
+enum RegistrationStatus{
+  REGISTRATION_STATUS_UNSPECIFIED = 0;
+  REGISTRATION_STATUS_ACCEPTED = 1;
+  REGISTRATION_STATUS_REJECTED = 2;
+}
+
+message BootNotification{
+  string model = 1;
+  string serial_number = 2;
+  string firmware_version = 3;
+}
+message BootNotificationResponse{
+  RegistrationStatus status = 1;
+  int32 heartbeat_interval_seconds = 2;
+}

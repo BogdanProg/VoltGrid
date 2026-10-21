@@ -97,3 +97,30 @@ point identity is part of the WebSocket URL.
 **Cost.** The header is only a claim: Gateway does not verify that the station
 really is ST-001 (no authentication, a documented limitation). Every client,
 including test tools like grpcurl, must send the header.
+
+## 5. Boot admission: the database decides, the device reports hardware facts
+
+**Date:** 2026-10-20 (stage 2.2)
+
+**Context.** BootNotification carries the station's model and serial number,
+read from its own hardware. The database holds what the operator entered at
+installation. They can disagree: a typo, a replaced controller board, or a
+different device using an existing station code (stations are not
+authenticated).
+
+**Decision.**
+- Station code not in the database → `Rejected`.
+- Serial number differs from the database → `Rejected`, Warning with both values.
+- Model differs → `Accepted`, Warning for the operator.
+
+**Reasoning.** Fail closed where money is at stake. A different device under an
+existing code would mix two meter histories into one station, and consumption
+(and therefore the bill) is computed from those readings. An unavailable
+station is visible and fixable; a wrong invoice is found by the customer a
+month later. A model mismatch does not affect metering, so blocking a working
+station over a data-entry typo is not worth the lost sessions.
+
+**Cost.** After a legitimate hardware replacement the station stays rejected
+until the operator updates the serial number, so the replacement procedure must
+include that update. Rejected stations retry boot after the interval, so they
+recover on their own once the data is fixed.

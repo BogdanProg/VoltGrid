@@ -6,6 +6,7 @@ namespace VoltGrid.Gateway;
 public class StationLinkService : StationLink.StationLinkBase
 {
     private readonly ILogger<StationLinkService> _logger;
+    private const int HeartbeatIntervalSeconds = 30;
 
     public StationLinkService(ILogger<StationLinkService> logger)
     {
@@ -34,11 +35,16 @@ public class StationLinkService : StationLink.StationLinkBase
                 switch (message.PayloadCase)
                 {
                     case StationMessage.PayloadOneofCase.BootNotification:
-                        _logger.LogInformation("Boot notification received from {StationId}", stationId);
+                        var boot = message.BootNotification;
+                        _logger.LogInformation("Boot from {StationId}, model {Model}, serial {SerialNumber}, firmware {FirmwareVersion}", stationId, boot.Model, boot.SerialNumber, boot.FirmwareVersion);
                         var response = new ServerMessage
                         {
                             MessageId = message.MessageId,
-                            BootNotificationResponse = new BootNotificationResponse()
+                            BootNotificationResponse = new BootNotificationResponse
+                            {
+                                Status = RegistrationStatus.Accepted,
+                                HeartbeatIntervalSeconds = HeartbeatIntervalSeconds 
+                            }
                         };
                         await responseStream.WriteAsync(response);
                         break;
