@@ -1,5 +1,6 @@
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using VoltGrid.Contracts.Station.V1;
 using VoltGrid.Infrastructure.Persistence;
 
@@ -43,7 +44,16 @@ public class StationLinkService : StationLink.StationLinkBase
                     case StationMessage.PayloadOneofCase.BootNotification:
                         var boot = message.BootNotification;
                         _logger.LogInformation("Boot from {StationId}, model {Model}, serial {SerialNumber}, firmware {FirmwareVersion}", stationId, boot.Model, boot.SerialNumber, boot.FirmwareVersion);
-                        var status = await RegisterBootAsync(stationId, boot, context.CancellationToken);
+                        RegistrationStatus  status;
+                        try
+                        {
+                            status = await RegisterBootAsync(stationId, boot, context.CancellationToken);
+                        }
+                        catch (Exception ex) when (ex is NpgsqlException || ex.InnerException is NpgsqlException)
+                        {
+                            _logger.LogError(ex, "Boot of {StationId} postponed: database unavailable", stationId);
+                            status = RegistrationStatus.Pending;
+                        }
                         var response = new ServerMessage
                         {
                             MessageId = message.MessageId,
@@ -98,10 +108,9 @@ public class StationLinkService : StationLink.StationLinkBase
                 "Station {StationId} model mismatch, database {Expected}, boot {Actual}",
                stationId, station.Model, boot.Model);
         }
-        _logger.LogInformation("Station {StationId} accepted",  stationId);
         station.RecordBoot(boot.FirmwareVersion, DateTimeOffset.UtcNow);
         await db.SaveChangesAsync(ct);
-            return RegistrationStatus.Accepted;
-        
+        _logger.LogInformation("Station {StationId} accepted",  stationId);
+        return RegistrationStatus.Accepted;
     }
 }

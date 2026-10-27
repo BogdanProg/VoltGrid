@@ -43,3 +43,4 @@ grpcurl -plaintext -import-path src/VoltGrid.Contracts/Protos -proto station_lin
 - README: свідоме обмеження — станції не автентифікуються (ідентичність береться з з'єднання, без перевірки)
 - Вирівняти версії gRPC-пакетів (Gateway `Grpc.AspNetCore` 2.64.0 vs Contracts 2.84.0); розглянути `Grpc.AspNetCore.Server` замість метапакета
 - Розглянути `WarningsAsErrors` для CA2017 у Gateway, щоб невідповідність плейсхолдерів у логах ламала збірку, а не стрім
+- Два одночасні стріми з однаковим station-id: Gateway приймає обидва; вирішити на 9.1 (реєстр: новий стрім витісняє старий)

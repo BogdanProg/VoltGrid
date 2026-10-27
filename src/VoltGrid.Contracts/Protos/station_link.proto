@@ -26,6 +26,7 @@ enum RegistrationStatus{
   REGISTRATION_STATUS_UNSPECIFIED = 0;
   REGISTRATION_STATUS_ACCEPTED = 1;
   REGISTRATION_STATUS_REJECTED = 2;
+  REGISTRATION_STATUS_PENDING = 3;
 }
 
 message BootNotification{
@@ -33,7 +34,10 @@ message BootNotification{
   string serial_number = 2;
   string firmware_version = 3;
 }
+
 message BootNotificationResponse{
   RegistrationStatus status = 1;
+  // ACCEPTED: send Heartbeat at this interval.
+  // PENDING / REJECTED: retry BootNotification after this delay.
   int32 heartbeat_interval_seconds = 2;
 }
