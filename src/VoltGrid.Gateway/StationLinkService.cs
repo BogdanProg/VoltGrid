@@ -1,16 +1,22 @@
 using Grpc.Core;
+using Microsoft.EntityFrameworkCore;
 using VoltGrid.Contracts.Station.V1;
+using VoltGrid.Infrastructure.Persistence;
 
 namespace VoltGrid.Gateway;
 
 public class StationLinkService : StationLink.StationLinkBase
 {
     private readonly ILogger<StationLinkService> _logger;
+    private readonly IDbContextFactory<VoltGridDbContext> _dbFactory;
     private const int HeartbeatIntervalSeconds = 30;
 
-    public StationLinkService(ILogger<StationLinkService> logger)
+    public StationLinkService(
+        ILogger<StationLinkService> logger,
+        IDbContextFactory<VoltGridDbContext> dbFactory)
     {
         _logger = logger;
+        _dbFactory = dbFactory;
     }
 
     public override async Task Connect(
@@ -37,12 +43,13 @@ public class StationLinkService : StationLink.StationLinkBase
                     case StationMessage.PayloadOneofCase.BootNotification:
                         var boot = message.BootNotification;
                         _logger.LogInformation("Boot from {StationId}, model {Model}, serial {SerialNumber}, firmware {FirmwareVersion}", stationId, boot.Model, boot.SerialNumber, boot.FirmwareVersion);
+                        var status = await DecideRegistrationAsync(stationId, boot, context.CancellationToken);
                         var response = new ServerMessage
                         {
                             MessageId = message.MessageId,
                             BootNotificationResponse = new BootNotificationResponse
                             {
-                                Status = RegistrationStatus.Accepted,
+                                Status = status,
                                 HeartbeatIntervalSeconds = HeartbeatIntervalSeconds 
                             }
                         };
@@ -64,5 +71,35 @@ public class StationLinkService : StationLink.StationLinkBase
         {
             _logger.LogInformation("Stream cleanup {StationId}", stationId); //Later will remove the station from Redis
         }
+    }
+
+    private async Task<RegistrationStatus> DecideRegistrationAsync(
+        string stationId, BootNotification boot, CancellationToken ct)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var station = await db.ChargingStations.FindAsync([stationId], ct);
+        if (station is null)
+        {
+            _logger.LogWarning("Station {StationId} not found", stationId);
+            return RegistrationStatus.Rejected;
+        }
+
+        if (boot.SerialNumber != station.SerialNumber)
+        {
+            _logger.LogWarning(
+                "Station {StationId} rejected: serial number mismatch, database {Expected}, boot {Actual}",
+                stationId, station.SerialNumber, boot.SerialNumber);
+            return RegistrationStatus.Rejected;
+        }
+
+        if (boot.Model != station.Model)
+        {
+            _logger.LogWarning(
+                "Station {StationId} model mismatch, database {Expected}, boot {Actual}",
+               stationId, station.Model, boot.Model);
+        }
+        _logger.LogInformation("Station {StationId} accepted",  stationId);
+            return RegistrationStatus.Accepted;
+        
     }
 }

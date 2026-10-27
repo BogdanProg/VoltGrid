@@ -32,9 +32,9 @@ grpcurl -plaintext -import-path src/VoltGrid.Contracts/Protos -proto station_lin
 —
 
 ## Технічний борг
+- Central Package Management (Directory.Packages.props): одна версія кожного пакета на все рішення; закриває розбіжності EF і gRPC
 - NU1903: вразливий Microsoft.OpenApi 2.0.0 у Charging.Api (транзитивна залежність шаблону webapi)
 - Program.cs у Charging.Api — шаблонний, не чищений (у Gateway вже чистий)
-- MSB3277: конфлікт версій Microsoft.EntityFrameworkCore під час збірки
 - Частковий унікальний індекс «одна активна сесія на конектор» — повернутись на етапі 5.5 / 9.4
 - Видалити шаблонний `Class1.cs` з `VoltGrid.Application`
 - `git push` з терміналу через GitHub CLI (`gh auth login`); у `bogdannalapko` немає sudo, тож `brew install gh` з адмін-акаунта
