@@ -19,5 +19,7 @@ public class ChargingStationConfiguration : IEntityTypeConfiguration<ChargingSta
             .HasMaxLength(20);
         builder.Property(c => c.SerialNumber)
             .HasMaxLength(25);
+        builder.Property(c => c.FirmwareVersion)
+            .HasMaxLength(50);
     }
 }

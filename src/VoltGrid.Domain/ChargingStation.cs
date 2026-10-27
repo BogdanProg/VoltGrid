@@ -10,5 +10,14 @@ public class ChargingStation
     public required string Model { get; init; }
     public required string SerialNumber { get; init; }
     public DateTimeOffset? LastHeartbeat { get; private set; }
+    public DateTimeOffset? LastBootAt { get; private set; }
+    public string? FirmwareVersion { get; private set; }
     public void RecordHeartbeat(DateTimeOffset at) => LastHeartbeat = at.ToUniversalTime();
+
+    public void RecordBoot(string firmwareVersion, DateTimeOffset at)
+    {
+        FirmwareVersion = firmwareVersion;
+        LastBootAt = at.ToUniversalTime();
+        LastHeartbeat = LastBootAt;
+    }
 }
