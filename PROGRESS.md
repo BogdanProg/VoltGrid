@@ -1,7 +1,7 @@
 # PROGRESS
 
 ## Поточний етап
-Етап 2.2 — двонаправлений стрім, `BootNotification`
+Етап 2.3 — `Heartbeat`, `StatusNotification`
 
 ## Зроблено
 - [x] Етап 0.1 — скелет рішення, 7 проєктів, git
@@ -9,24 +9,31 @@
 - [x] Етап 1.1 — домен
 - [x] Етап 1.2 — `DbContext`, перша міграція, сідинг
 - [x] Етап 2.1 — `.proto` контракт, кодогенерація, порожній gRPC-сервіс
+- [x] Етап 2.2 — двонаправлений стрім, `BootNotification`, політика допуску, запис boot у базу
 
 ## Останній робочий стан
-Етап 2.2: готові концепти 1–3 з 6 (цикл читання; диспетчеризація і відповідь; ідентичність станції).
+Етап 2.2 закрито, усі сценарії перевірені grpcurl (рішення №4–6 у `DECISIONS.md`).
 
-`StationLinkService.Connect` у Gateway:
-- на старті читає заголовок `station-id` з `context.RequestHeaders`; без нього Warning з `{Peer}` і `RpcException(StatusCode.Unauthenticated)`, до `try`;
-- цикл `await foreach` по `requestStream.ReadAllAsync(context.CancellationToken)`; повідомлення однієї станції обробляються строго по черзі;
-- `switch` за `PayloadCase`: `BootNotification` → відповідь `ServerMessage` з тим самим `message_id` і порожнім `BootNotificationResponse`; `default` → Warning «Unsupported payload»;
-- `catch (IOException)` → Warning «connection lost» одним рядком, без траси стека;
-- `finally` → місце для прибирання (етап 9.1: видалити станцію з реєстру Redis);
-- усі логи містять `{StationId}`.
+Контракт `station_link.proto`:
+- `BootNotification`: `model`, `serial_number`, `firmware_version`;
+- `BootNotificationResponse`: `RegistrationStatus status` (`UNSPECIFIED` = 0, `ACCEPTED`, `REJECTED`, `PENDING`) і `heartbeat_interval_seconds`.
 
-Перевірка grpcurl (з кореня репозиторію):
+`StationLinkService` у Gateway:
+- ідентичність із заголовка `station-id`; без нього `Unauthenticated` до `try`;
+- цикл `await foreach` по `ReadAllAsync`, `switch` за `PayloadCase`, відповідь з тим самим `message_id`;
+- `RegisterBootAsync`: короткий `DbContext` з `IDbContextFactory`; немає в базі або інший серійний → `Rejected`; інша модель → `Accepted` + Warning; `Accepted` → `ChargingStation.RecordBoot` (прошивка, `LastBootAt`, `LastHeartbeat`) + `SaveChangesAsync`;
+- база недоступна (`NpgsqlException`) → Error + `Pending`, стрім живий;
+- обрив (`IOException`) → Warning; `finally` → місце для прибирання (етап 9.1);
+- інтервал Heartbeat — константа 30 с.
+
+Міграції: `InitialCreate`, `AddStationBootInfo` (`FirmwareVersion`, `LastBootAt`).
+Сідер: `ST-001` (Plus, 123), `ST-002` (Pro, 456).
+
+Перевірка (з кореня репозиторію):
 grpcurl -plaintext -import-path src/VoltGrid.Contracts/Protos -proto station_link.proto -H 'station-id: ST-001' -d @ localhost:5205 voltgrid.station.v1.StationLink/Connect
-Без `-H` → `Unauthenticated`. Із `-H`: штатне закриття (control+D), обрив (control+C), відповідь на boot з `messageId: "1"`.
+{"messageId": "1", "bootNotification": {"model": "Plus", "serialNumber": "123", "firmwareVersion": "1.0.3"}}
 
-Наступне: концепт 4 — зміст `BootNotification` і відповіді (поля, Accepted / Rejected, інтервал Heartbeat).
-Відкрите питання для концепту 5: неперехоплений виняток в обробці одного повідомлення обриває весь стрім станції.
+Наступне: етап 2.3. Перше питання — що Gateway робить з повідомленнями від станції, яку ще не прийнято (до `Accepted` або після `Rejected` / `Pending`).
 
 ## Де застряг
 —
@@ -44,3 +51,5 @@ grpcurl -plaintext -import-path src/VoltGrid.Contracts/Protos -proto station_lin
 - Вирівняти версії gRPC-пакетів (Gateway `Grpc.AspNetCore` 2.64.0 vs Contracts 2.84.0); розглянути `Grpc.AspNetCore.Server` замість метапакета
 - Розглянути `WarningsAsErrors` для CA2017 у Gateway, щоб невідповідність плейсхолдерів у логах ламала збірку, а не стрім
 - Два одночасні стріми з однаковим station-id: Gateway приймає обидва; вирішити на 9.1 (реєстр: новий стрім витісняє старий)
+- Один збій бази дає три `fail` (EF `Database.Connection`, EF `Query` і наш Error): налаштувати рівні категорій EF на етапі 14
+- Інтервал Heartbeat — константа в коді; перенести в `appsettings.json`, коли знадобиться змінювати без перезбірки

@@ -97,7 +97,7 @@ point identity is part of the WebSocket URL.
 **Cost.** The header is only a claim: Gateway does not verify that the station
 really is ST-001 (no authentication, a documented limitation). Every client,
 including test tools like grpcurl, must send the header.
-
+---
 ## 5. Boot admission: the database decides, the device reports hardware facts
 
 **Date:** 2026-10-20 (stage 2.2)
@@ -124,3 +124,35 @@ station over a data-entry typo is not worth the lost sessions.
 until the operator updates the serial number, so the replacement procedure must
 include that update. Rejected stations retry boot after the interval, so they
 recover on their own once the data is fixed.
+---
+
+## 6. Message handling failures: expected ones keep the stream, unexpected ones end it
+
+**Date:** 2026-10-27 (stage 2.2)
+
+**Context.** A station's stream lives for days, and every message is handled
+inside it. An exception that escapes `Connect` ends the stream: the station
+sees `Unknown`, reconnects and resends. Some failures are expected and are not
+the station's fault (the database is down, the station's network drops);
+others are bugs.
+
+**Decision.**
+- Station disconnects (`IOException` from the request stream): Warning, one
+  line, no stack trace.
+- Database unavailable while handling BootNotification (`NpgsqlException`,
+  directly or as the inner exception): Error with the exception, reply
+  `Pending`, keep the stream.
+- Anything else is not caught: the stream ends and the gRPC framework logs
+  `fail`.
+
+**Reasoning.** The log level follows whose problem it is: a dropped LTE link is
+routine, a missing database needs someone to act. `Pending` tells the station
+it is not at fault and should retry boot after the interval, without a
+reconnect storm from a thousand stations. `Rejected` would send the operator
+looking for bad station data that is not there. Unexpected exceptions are bugs;
+catching them would hide them behind `Pending` or a Warning, so they fail
+loudly instead.
+
+**Cost.** A bug in a message handler still drops the station's connection until
+it is fixed. All stations told `Pending` retry after the same interval, so a
+recovering database meets a burst of boots; jitter is planned for stage 10.3.
