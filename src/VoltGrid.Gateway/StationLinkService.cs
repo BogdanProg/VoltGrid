@@ -43,7 +43,7 @@ public class StationLinkService : StationLink.StationLinkBase
                     case StationMessage.PayloadOneofCase.BootNotification:
                         var boot = message.BootNotification;
                         _logger.LogInformation("Boot from {StationId}, model {Model}, serial {SerialNumber}, firmware {FirmwareVersion}", stationId, boot.Model, boot.SerialNumber, boot.FirmwareVersion);
-                        var status = await DecideRegistrationAsync(stationId, boot, context.CancellationToken);
+                        var status = await RegisterBootAsync(stationId, boot, context.CancellationToken);
                         var response = new ServerMessage
                         {
                             MessageId = message.MessageId,
@@ -73,7 +73,7 @@ public class StationLinkService : StationLink.StationLinkBase
         }
     }
 
-    private async Task<RegistrationStatus> DecideRegistrationAsync(
+    private async Task<RegistrationStatus> RegisterBootAsync(
         string stationId, BootNotification boot, CancellationToken ct)
     {
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
@@ -99,6 +99,8 @@ public class StationLinkService : StationLink.StationLinkBase
                stationId, station.Model, boot.Model);
         }
         _logger.LogInformation("Station {StationId} accepted",  stationId);
+        station.RecordBoot(boot.FirmwareVersion, DateTimeOffset.UtcNow);
+        await db.SaveChangesAsync(ct);
             return RegistrationStatus.Accepted;
         
     }
