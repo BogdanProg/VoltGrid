@@ -99,6 +99,8 @@ public class StationLinkService : StationLink.StationLinkBase
             _logger.LogWarning(
                 "Station {StationId} rejected: serial number mismatch, database {Expected}, boot {Actual}",
                 stationId, station.SerialNumber, boot.SerialNumber);
+            station.RecordRejectedBoot();
+            await db.SaveChangesAsync(ct);
             return RegistrationStatus.Rejected;
         }
 
@@ -108,7 +110,7 @@ public class StationLinkService : StationLink.StationLinkBase
                 "Station {StationId} model mismatch, database {Expected}, boot {Actual}",
                stationId, station.Model, boot.Model);
         }
-        station.RecordBoot(boot.FirmwareVersion, DateTimeOffset.UtcNow);
+        station.RecordAcceptedBoot(boot.FirmwareVersion, DateTimeOffset.UtcNow);
         await db.SaveChangesAsync(ct);
         _logger.LogInformation("Station {StationId} accepted",  stationId);
         return RegistrationStatus.Accepted;

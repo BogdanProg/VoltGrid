@@ -99,6 +99,9 @@ namespace VoltGrid.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset?>("LastBootAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<int>("LastBootStatus")
+                        .HasColumnType("integer");
+
                     b.Property<DateTimeOffset?>("LastHeartbeat")
                         .HasColumnType("timestamp with time zone");
 
