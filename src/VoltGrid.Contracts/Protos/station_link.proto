@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package voltgrid.station.v1;
 
+import "google/protobuf/timestamp.proto";
+
 option csharp_namespace = "VoltGrid.Contracts.Station.V1";
 
 service StationLink {
@@ -12,6 +14,7 @@ message StationMessage{
   string message_id = 1;
   oneof payload{
     BootNotification boot_notification = 2;
+    Heartbeat heartbeat = 3;
   }
 }
 
@@ -20,6 +23,7 @@ message ServerMessage{
   oneof payload{
     BootNotificationResponse boot_notification_response = 2;
     ErrorResponse error = 3;
+    HeartbeatResponse heartbeat_response = 4;
   }
 }
 
@@ -50,5 +54,11 @@ message BootNotificationResponse{
   // ACCEPTED: send Heartbeat at this interval.
   // PENDING / REJECTED: retry BootNotification after this delay.
   int32 heartbeat_interval_seconds = 2;
+  google.protobuf.Timestamp current_time = 3;
 }
 
+message Heartbeat{}
+
+message HeartbeatResponse{
+  google.protobuf.Timestamp current_time = 1;
+}
