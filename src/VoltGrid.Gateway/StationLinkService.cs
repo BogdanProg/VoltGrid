@@ -79,10 +79,16 @@ public class StationLinkService : StationLink.StationLinkBase
                             admitted = false;
                         }
                         else
-                        {
-                            admitted = await RecordHeartbeatAsync(
-                                stationId, streamBootStatus == RegistrationStatus.Accepted, context.CancellationToken);
-                        }
+                            try
+                            {
+                                admitted = await RecordHeartbeatAsync(
+                                    stationId, streamBootStatus == RegistrationStatus.Accepted, context.CancellationToken);
+                            }
+                            catch (Exception ex) when (ex is NpgsqlException || ex.InnerException is NpgsqlException )
+                            {
+                                _logger.LogError(ex, "Heartbeat of {StationId} not recorded: database unavailable", stationId);
+                                admitted = streamBootStatus == RegistrationStatus.Accepted;
+                            }
 
                         var reply = new ServerMessage { MessageId = message.MessageId };
                         if (admitted)
