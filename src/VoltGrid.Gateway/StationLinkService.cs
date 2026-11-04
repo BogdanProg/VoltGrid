@@ -79,16 +79,20 @@ public class StationLinkService : StationLink.StationLinkBase
                             admitted = false;
                         }
                         else
+                        {
                             try
                             {
                                 admitted = await RecordHeartbeatAsync(
-                                    stationId, streamBootStatus == RegistrationStatus.Accepted, context.CancellationToken);
+                                    stationId, streamBootStatus == RegistrationStatus.Accepted,
+                                    context.CancellationToken);
                             }
-                            catch (Exception ex) when (ex is NpgsqlException || ex.InnerException is NpgsqlException )
+                            catch (Exception ex) when (ex is NpgsqlException || ex.InnerException is NpgsqlException)
                             {
-                                _logger.LogError(ex, "Heartbeat of {StationId} not recorded: database unavailable", stationId);
+                                _logger.LogError(ex, "Heartbeat of {StationId} not recorded: database unavailable",
+                                    stationId);
                                 admitted = streamBootStatus == RegistrationStatus.Accepted;
                             }
+                        }
 
                         var reply = new ServerMessage { MessageId = message.MessageId };
                         if (admitted)
@@ -101,6 +105,57 @@ public class StationLinkService : StationLink.StationLinkBase
                             reply.Error = new ErrorResponse { Code = ErrorCode.NotAccepted };
                         }
 
+                        await responseStream.WriteAsync(reply);
+                        break;
+                    }
+
+                    case StationMessage.PayloadOneofCase.StatusNotification:
+                    {
+                        var notification = message.StatusNotification;
+                        var connectorStatus = ToDomain(notification.ConnectorStatus);
+                        if (connectorStatus is ConnectorStatus.Unknown)
+                        {
+                            _logger.LogWarning("Station {StationId} connector {ConnectorNumber} reported unrecognised status {ReportedStatus}, recorded as Unknown", stationId, notification.ConnectorNumber, notification.ConnectorStatus);
+                        }
+
+                        ErrorCode? error = null;
+                        if (streamBootStatus is RegistrationStatus.Rejected or RegistrationStatus.Pending)
+                        {
+                            error = ErrorCode.NotAccepted;
+                        }
+                        else
+                        {
+                            try
+                            {
+                                var admitted = await RecordConnectorStatusAsync(
+                                    stationId,
+                                    streamBootStatus == RegistrationStatus.Accepted,
+                                    notification.ConnectorNumber,
+                                    connectorStatus,
+                                    context.CancellationToken);
+                                if (!admitted)
+                                {
+                                    error = ErrorCode.NotAccepted;
+                                }
+                            }
+                            catch (Exception ex) when (ex is NpgsqlException || ex.InnerException is NpgsqlException)
+                            {
+                                _logger.LogError(ex, "Status of {StationId} connector {ConnectorNumber} not recorded: database unavailable", stationId, notification.ConnectorNumber);
+                                error = streamBootStatus == RegistrationStatus.Accepted ? ErrorCode.RetryLater : ErrorCode.NotAccepted;
+                            }
+                        }
+                        
+                        var reply = new ServerMessage { MessageId = message.MessageId };
+                        if (error is null)
+                        {
+                            reply.StatusNotificationResponse = new StatusNotificationResponse();
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Message {MessageId} from {StationId} refused: {Error}", message.MessageId, stationId, error);
+                            reply.Error = new ErrorResponse { Code = error.Value };
+                        }
+                        
                         await responseStream.WriteAsync(reply);
                         break;
                     }
@@ -174,4 +229,39 @@ public class StationLinkService : StationLink.StationLinkBase
         await db.SaveChangesAsync(ct);
         return true;
     }
+
+    private async Task<bool> RecordConnectorStatusAsync(
+        string stationId, bool admittedInStream, int connectorNumber, ConnectorStatus status, CancellationToken ct)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var station = await db.ChargingStations.FindAsync([stationId], ct);
+        if (station is null)
+        {
+            return false;
+        }
+
+        if (!admittedInStream && station.LastBootStatus != LastBootStatus.Accepted)
+        {
+            return false;
+        }
+        var connector = await db.Connectors.FindAsync([stationId, connectorNumber], ct);
+        if (connector is null)
+        {
+            _logger.LogWarning("For {StationId} Connector {ConnectorNumber} not found, status {Status} can't be changed", stationId, connectorNumber, status);
+            return true;
+        }
+        connector.ChangeStatus(status);
+        await db.SaveChangesAsync(ct);
+        return true;
+    }
+
+    private static ConnectorStatus ToDomain(ConnectorSentStatus status) => status switch
+    {
+        ConnectorSentStatus.Available => ConnectorStatus.Available,
+        ConnectorSentStatus.Occupied => ConnectorStatus.Occupied,
+        ConnectorSentStatus.Charging => ConnectorStatus.Charging,
+        ConnectorSentStatus.Faulted => ConnectorStatus.Faulted,
+        ConnectorSentStatus.Unavailable => ConnectorStatus.Unavailable,
+        _ => ConnectorStatus.Unknown
+    };
 }

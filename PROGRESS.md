@@ -1,7 +1,7 @@
 # PROGRESS
 
 ## Поточний етап
-Етап 2.3 — `Heartbeat`, `StatusNotification`
+Етап 3.1 — симулятор: одна станція, підключення, boot
 
 ## Зроблено
 - [x] Етап 0.1 — скелет рішення, 7 проєктів, git
@@ -10,30 +10,45 @@
 - [x] Етап 1.2 — `DbContext`, перша міграція, сідинг
 - [x] Етап 2.1 — `.proto` контракт, кодогенерація, порожній gRPC-сервіс
 - [x] Етап 2.2 — двонаправлений стрім, `BootNotification`, політика допуску, запис boot у базу
+- [x] Етап 2.3 — `Heartbeat`, `StatusNotification`, допуск повідомлень, поведінка при падінні бази
 
 ## Останній робочий стан
-Етап 2.2 закрито, усі сценарії перевірені grpcurl (рішення №4–6 у `DECISIONS.md`).
+Етап 2.3 закрито, усі сценарії перевірені grpcurl (рішення №7 у `DECISIONS.md`).
 
 Контракт `station_link.proto`:
-- `BootNotification`: `model`, `serial_number`, `firmware_version`;
-- `BootNotificationResponse`: `RegistrationStatus status` (`UNSPECIFIED` = 0, `ACCEPTED`, `REJECTED`, `PENDING`) і `heartbeat_interval_seconds`.
+- `StationMessage.payload`: `boot_notification` = 2, `heartbeat` = 3, `status_notification` = 4;
+- `ServerMessage.payload`: `boot_notification_response` = 2, `error` = 3, `heartbeat_response` = 4, `status_notification_response` = 5;
+- `BootNotificationResponse`: `status`, `heartbeat_interval_seconds`, `current_time` (`google.protobuf.Timestamp`);
+- `Heartbeat` порожній; `HeartbeatResponse`: `current_time`;
+- `StatusNotification`: `connector_number`, `ConnectorSentStatus connector_status` (`UNSPECIFIED`, `AVAILABLE`, `OCCUPIED`, `CHARGING`, `FAULTED`, `UNAVAILABLE`); `StatusNotificationResponse` порожній;
+- `ErrorResponse`: `ErrorCode code` (`UNSPECIFIED`, `NOT_ACCEPTED`, `RETRY_LATER`).
+
+Домен:
+- `LastBootStatus` (`Unknown`, `Accepted`, `Rejected`) у `ChargingStation`;
+- `RecordAcceptedBoot` (прошивка, `LastBootAt`, `LastHeartbeat`, статус), `RecordRejectedBoot` (тільки статус).
 
 `StationLinkService` у Gateway:
-- ідентичність із заголовка `station-id`; без нього `Unauthenticated` до `try`;
-- цикл `await foreach` по `ReadAllAsync`, `switch` за `PayloadCase`, відповідь з тим самим `message_id`;
-- `RegisterBootAsync`: короткий `DbContext` з `IDbContextFactory`; немає в базі або інший серійний → `Rejected`; інша модель → `Accepted` + Warning; `Accepted` → `ChargingStation.RecordBoot` (прошивка, `LastBootAt`, `LastHeartbeat`) + `SaveChangesAsync`;
-- база недоступна (`NpgsqlException`) → Error + `Pending`, стрім живий;
-- обрив (`IOException`) → Warning; `finally` → місце для прибирання (етап 9.1);
-- інтервал Heartbeat — константа 30 с.
+- `streamBootStatus` (`RegistrationStatus?`) живе весь стрім; правило допуску: boot у стрімі → його результат, інакше `LastBootStatus` у базі;
+- неприйнята станція → Warning + `ErrorResponse NOT_ACCEPTED`, стрім живий;
+- `RecordHeartbeatAsync` / `RecordConnectorStatusAsync`: короткий `DbContext`, перевірка допуску, запис;
+- `ToDomain`: `ConnectorSentStatus` → `ConnectorStatus` через `switch`; невідоме значення → `Unknown` + Warning;
+- невідомий конектор → Warning, нічого не пишемо, відповідь «отримав»;
+- база лежить: boot → `Pending`; heartbeat → час (якщо допущено в стрімі) або `NOT_ACCEPTED`; статус → `RETRY_LATER` (якщо допущено в стрімі) або `NOT_ACCEPTED`.
 
-Міграції: `InitialCreate`, `AddStationBootInfo` (`FirmwareVersion`, `LastBootAt`).
-Сідер: `ST-001` (Plus, 123), `ST-002` (Pro, 456).
+Міграції: `InitialCreate`, `AddStationBootInfo`, `AddLastBootStatus`.
+Сідер: `ST-001` (Plus, 123), `ST-002` (Pro, 456); у кожної конектори 1 (Type2) і 2 (CCS).
 
 Перевірка (з кореня репозиторію):
 grpcurl -plaintext -import-path src/VoltGrid.Contracts/Protos -proto station_link.proto -H 'station-id: ST-001' -d @ localhost:5205 voltgrid.station.v1.StationLink/Connect
-{"messageId": "1", "bootNotification": {"model": "Plus", "serialNumber": "123", "firmwareVersion": "1.0.3"}}
+{"messageId": "1", "bootNotification": {"model": "Plus", "serialNumber": "123", "firmwareVersion": "1.0.4"}}
+{"messageId": "2", "heartbeat": {}}
+{"messageId": "3", "statusNotification": {"connectorNumber": 2, "connectorStatus": "CONNECTOR_SENT_STATUS_OCCUPIED"}}
 
-Наступне: етап 2.3. Перше питання — що Gateway робить з повідомленнями від станції, яку ще не прийнято (до `Accepted` або після `Rejected` / `Pending`).
+Наступне: етап 3.1. Симулятор має поводитись як справжня станція за протоколом:
+- `ERROR_CODE_NOT_ACCEPTED` → надіслати `BootNotification`;
+- після `Accepted` → `StatusNotification` для кожного конектора;
+- `ERROR_CODE_RETRY_LATER` → надіслати те саме повідомлення ще раз пізніше;
+- `Pending` / `Rejected` → повторити boot через `heartbeat_interval_seconds`.
 
 ## Де застряг
 —
@@ -53,3 +68,8 @@ grpcurl -plaintext -import-path src/VoltGrid.Contracts/Protos -proto station_lin
 - Два одночасні стріми з однаковим station-id: Gateway приймає обидва; вирішити на 9.1 (реєстр: новий стрім витісняє старий)
 - Один збій бази дає три `fail` (EF `Database.Connection`, EF `Query` і наш Error): налаштувати рівні категорій EF на етапі 14
 - Інтервал Heartbeat — константа в коді; перенести в `appsettings.json`, коли знадобиться змінювати без перезбірки
+- Фільтр `NpgsqlException` у трьох `catch` ловить і помилки схеми (`PostgresException`, наприклад забута міграція), не тільки недоступність бази; звузити до `IsTransient`
+- Фільтр «база недоступна» повторюється в трьох `case`; винести в один метод, коли з'явиться четверте повідомлення (етап 4)
+- Конектор 0 (OCPP: статус усієї станції) не підтримується, зараз логується як невідомий конектор
+- Контракт: код помилки для некоректних даних від станції (аналог OCPP `FormatViolation`)
+- `RecordConnectorStatusAsync` завантажує станцію навіть тоді, коли допуск відомий зі стріму (зайвий `SELECT`)

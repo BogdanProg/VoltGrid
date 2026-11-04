@@ -156,3 +156,64 @@ loudly instead.
 **Cost.** A bug in a message handler still drops the station's connection until
 it is fixed. All stations told `Pending` retry after the same interval, so a
 recovering database meets a burst of boots; jitter is planned for stage 10.3.
+
+---
+
+## 7. Message admission: the stream's boot decides, otherwise the database
+
+**Date:** 2026-11-04 (stage 2.3)
+
+**Context.** After boot a station sends Heartbeat and StatusNotification, and
+from stage 4 meter values that bills are computed from. A station that was
+never admitted (unknown code, serial mismatch, `Pending`) may still send them:
+firmware has bugs and stations are not authenticated. A station that was
+admitted reconnects after a network drop without booting again (decision 4),
+so a new stream knows nothing about the earlier boot.
+
+**Decision.**
+- Admission rule: if this stream had a boot, its result decides; otherwise
+  `ChargingStation.LastBootStatus` in the database decides.
+- `LastBootStatus` (`Unknown`, `Accepted`, `Rejected`) is stored for every
+  accepted and rejected boot. `Pending` is never stored. A rejected boot
+  changes only the status: firmware, boot time and last heartbeat stay those
+  of our own device.
+- A message from a station that is not admitted gets an `ErrorResponse`
+  `NOT_ACCEPTED` with the same `message_id`, plus a Warning. The stream stays
+  open.
+- Database unavailable:
+  - Heartbeat, admitted in this stream: reply with the current time, do not
+    record the heartbeat. Admission unknown: `NOT_ACCEPTED`.
+  - StatusNotification, admitted in this stream: `RETRY_LATER`. Admission
+    unknown: `NOT_ACCEPTED`.
+- StatusNotification with `UNSPECIFIED` or an unknown status value: record
+  `Unknown`, Warning with the raw value, reply as received. Unknown connector
+  number: record nothing, never create a connector, Warning, reply as received.
+
+**Reasoning.** Fail closed where money is at stake (decision 5): a different
+device under an existing code must not update heartbeats, statuses or, later,
+meter values. Closing the stream adds no protection (not processing the
+message is the protection) and turns a database outage into a reconnect storm.
+Heartbeat is periodic, so one unrecorded heartbeat is replaced 30 s later.
+StatusNotification is an event sent once per change, so losing it leaves the
+map wrong until the next change; the station must resend it. A status
+notification means the old status is stale even if the new one is unreadable,
+and `Unknown` hides the connector from drivers, which is safer than showing an
+occupied connector as available. An error reply would not help a station that
+cannot fix its own firmware; the operator learns from the log. Connectors are
+never created from station data: a connector needs a tariff, which is the
+operator's price, and stations are not authenticated.
+
+**Cost.**
+- One gap remains: a device that got `Pending` because the database was down
+  can reconnect without booting, and the stale `Accepted` in the database
+  admits it. This needs a database outage during that boot and firmware that
+  skips boot.
+- After a Gateway restart almost every stream has no boot, so during a
+  database outage almost the whole network gets `NOT_ACCEPTED`, boots, gets
+  `Pending`, and the recovering database meets a burst of boots (jitter is
+  planned for stage 10.3).
+- Correctness depends on station behaviour: boot after `NOT_ACCEPTED`, send
+  the status of every connector after `Accepted`, resend after `RETRY_LATER`.
+  The simulator implements this from stage 3.1.
+- OCPP connector 0 (status of the whole station) is not supported and is
+  logged as an unknown connector.

@@ -15,6 +15,7 @@ message StationMessage{
   oneof payload{
     BootNotification boot_notification = 2;
     Heartbeat heartbeat = 3;
+    StatusNotification status_notification = 4;
   }
 }
 
@@ -24,6 +25,7 @@ message ServerMessage{
     BootNotificationResponse boot_notification_response = 2;
     ErrorResponse error = 3;
     HeartbeatResponse heartbeat_response = 4;
+    StatusNotificationResponse status_notification_response = 5;
   }
 }
 
@@ -37,10 +39,29 @@ enum RegistrationStatus{
 enum ErrorCode{
   ERROR_CODE_UNSPECIFIED = 0;
   ERROR_CODE_NOT_ACCEPTED = 1;
+  ERROR_CODE_RETRY_LATER = 2;
 }
-
+ 
 message ErrorResponse{
   ErrorCode code = 1;
+}
+
+enum ConnectorSentStatus {
+  CONNECTOR_SENT_STATUS_UNSPECIFIED = 0;
+  CONNECTOR_SENT_STATUS_AVAILABLE = 1;
+  CONNECTOR_SENT_STATUS_OCCUPIED = 2;
+  CONNECTOR_SENT_STATUS_CHARGING = 3;
+  CONNECTOR_SENT_STATUS_FAULTED = 4;
+  CONNECTOR_SENT_STATUS_UNAVAILABLE = 5;
+}
+
+message StatusNotification{
+  int32 connector_number = 1;
+  ConnectorSentStatus connector_status = 2;
+}
+
+message StatusNotificationResponse{
+  
 }
 
 message BootNotification{
