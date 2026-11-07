@@ -61,7 +61,6 @@ grpcurl -plaintext -import-path src/VoltGrid.Contracts/Protos -proto station_lin
 - Видалити шаблонний `Class1.cs` з `VoltGrid.Application`
 - `git push` з терміналу через GitHub CLI (`gh auth login`); у `bogdannalapko` немає sudo, тож `brew install gh` з адмін-акаунта
 - Контракт: варіант відповіді «не знаю такої команди» (аналог OCPP `NotImplemented`), додати разом із першою командою від Gateway
-- `Station.Simulator`: `ProjectReference` на Contracts є, бракує пакета `Grpc.Net.Client` (знадобиться на 3.1)
 - README: свідоме обмеження — станції не автентифікуються (ідентичність береться з з'єднання, без перевірки)
 - Вирівняти версії gRPC-пакетів (Gateway `Grpc.AspNetCore` 2.64.0 vs Contracts 2.84.0); розглянути `Grpc.AspNetCore.Server` замість метапакета
 - Розглянути `WarningsAsErrors` для CA2017 у Gateway, щоб невідповідність плейсхолдерів у логах ламала збірку, а не стрім
