@@ -7,6 +7,9 @@ const string StationId = "ST-001";
 const string StationModel = "Plus";
 const string StationSerialNumber = "123";
 const string StationFirmwareVersion = "1.0.5";
+const int ReplyTimeoutSeconds = 35; 
+
+var lastMessageId = 0;
 
 using var channel = GrpcChannel.ForAddress(GatewayAddress);
 var client = new StationLink.StationLinkClient(channel);
@@ -19,7 +22,6 @@ try
 
     var bootMessage = new StationMessage
     {
-        MessageId = "1",
         BootNotification = new BootNotification
         {
             Model = StationModel,
@@ -27,16 +29,8 @@ try
             FirmwareVersion = StationFirmwareVersion
         }
     };
-    await call.RequestStream.WriteAsync(bootMessage);
-    Console.WriteLine($"Sent BootNotification as message {bootMessage.MessageId}");
 
-    if (!await call.ResponseStream.MoveNext(CancellationToken.None))
-    {
-        Console.WriteLine("Gateway closed the stream without a reply");
-        return;
-    }
-
-    var reply = call.ResponseStream.Current;
+    var reply = await SendAsync(call, bootMessage);
     Console.WriteLine($"Reply to message {reply.MessageId}");
 
     switch (reply.PayloadCase)
@@ -63,4 +57,28 @@ try
 catch (RpcException ex)
 {
     Console.WriteLine($"Call failed: {ex.StatusCode}, {ex.Status.Detail}");
+}
+
+async Task<ServerMessage> SendAsync(
+    AsyncDuplexStreamingCall<StationMessage, ServerMessage> call,
+    StationMessage message)
+{
+    var messageId =  ++lastMessageId;
+    message.MessageId = messageId.ToString();
+    await call.RequestStream.WriteAsync(message);
+    Console.WriteLine($"Sent message {messageId}: {message.PayloadCase}");
+    using var timeout =  new CancellationTokenSource(TimeSpan.FromSeconds(ReplyTimeoutSeconds));
+    var hasReply = await call.ResponseStream.MoveNext(timeout.Token);
+    if (!hasReply)
+    {
+        throw new RpcException(new Status(StatusCode.Unavailable, $"Gateway closed the stream without replying to message {messageId}"));
+    }
+    
+    var reply = call.ResponseStream.Current;
+    if (reply.MessageId != message.MessageId)
+    {
+        throw new InvalidOperationException($"Reply id {reply.MessageId} does not match message id {message.MessageId}");
+    }
+    
+    return reply;
 }

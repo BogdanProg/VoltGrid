@@ -13,7 +13,12 @@
 - [x] Етап 2.3 — `Heartbeat`, `StatusNotification`, допуск повідомлень, поведінка при падінні бази
 
 ## Останній робочий стан
-Етап 2.3 закрито, усі сценарії перевірені grpcurl (рішення №7 у `DECISIONS.md`).
+Етап 3.1, крок 1 з 4 зроблено: `Station.Simulator` відкриває дуплексний виклик із `station-id`, надсилає один `BootNotification`, читає одну відповідь, закриває свій бік і читає фінальний статус виклику.
+Перевірено:
+- Gateway працює → `Accepted`, статус виклику `OK`, boot у базі;
+- Gateway вимкнений → `Unavailable` на `WriteAsync` (`Connect` повертається одразу, нічого не чекаючи);
+- без `station-id` → `WriteAsync` проходить, `Unauthenticated` приходить на `MoveNext`; Gateway не прочитав жодного повідомлення («надіслано» ≠ «оброблено»);
+- `GetStatus()` до завершення виклику → `InvalidOperationException`; статус доступний лише після того, як `MoveNext` повернув `false`.
 
 Контракт `station_link.proto`:
 - `StationMessage.payload`: `boot_notification` = 2, `heartbeat` = 3, `status_notification` = 4;
@@ -44,11 +49,12 @@ grpcurl -plaintext -import-path src/VoltGrid.Contracts/Protos -proto station_lin
 {"messageId": "2", "heartbeat": {}}
 {"messageId": "3", "statusNotification": {"connectorNumber": 2, "connectorStatus": "CONNECTOR_SENT_STATUS_OCCUPIED"}}
 
-Наступне: етап 3.1. Симулятор має поводитись як справжня станція за протоколом:
-- `ERROR_CODE_NOT_ACCEPTED` → надіслати `BootNotification`;
-- після `Accepted` → `StatusNotification` для кожного конектора;
-- `ERROR_CODE_RETRY_LATER` → надіслати те саме повідомлення ще раз пізніше;
-- `Pending` / `Rejected` → повторити boot через `heartbeat_interval_seconds`.
+Наступне: етап 3.1, кроки 2–4:
+2. `SendAsync`: надіслати повідомлення й дочекатися відповіді з таймаутом, перевірка `message_id`;
+3. стан boot: `Accepted` / `Pending` / `Rejected`, повтор boot через `heartbeat_interval_seconds`;
+4. після `Accepted` — `StatusNotification` для кожного конектора, повтор при `RETRY_LATER`.
+   На 3.2: `NOT_ACCEPTED` → boot (виникає лише після перепідключення без boot); стратегія `message_id` (лічильник на процес чи `Guid.CreateVersion7()`).
+   Окремий цикл читання в симуляторі — коли Gateway почне сам слати команди (етап 9.3) або коли в станції з'являться два незалежні потоки повідомлень (етап 4).
 
 ## Де застряг
 —
