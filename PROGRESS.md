@@ -78,3 +78,4 @@ grpcurl -plaintext -import-path src/VoltGrid.Contracts/Protos -proto station_lin
 - Конектор 0 (OCPP: статус усієї станції) не підтримується, зараз логується як невідомий конектор
 - Контракт: код помилки для некоректних даних від станції (аналог OCPP `FormatViolation`)
 - `RecordConnectorStatusAsync` завантажує станцію навіть тоді, коли допуск відомий зі стріму (зайвий `SELECT`)
+- рівень логів категорії Grpc.AspNetCore.Server налаштувати на етапі 14

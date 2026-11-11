@@ -8,6 +8,7 @@ const string StationModel = "Plus";
 const string StationSerialNumber = "123";
 const string StationFirmwareVersion = "1.0.5";
 const int ReplyTimeoutSeconds = 35; 
+const int MinBootRetrySeconds = 25;
 
 var lastMessageId = 0;
 
@@ -20,40 +21,15 @@ try
     using var call = client.Connect(headers);
     Console.WriteLine("Call opened");
 
-    var bootMessage = new StationMessage
-    {
-        BootNotification = new BootNotification
-        {
-            Model = StationModel,
-            SerialNumber = StationSerialNumber,
-            FirmwareVersion = StationFirmwareVersion
-        }
-    };
-
-    var reply = await SendAsync(call, bootMessage);
-    Console.WriteLine($"Reply to message {reply.MessageId}");
-
-    switch (reply.PayloadCase)
-    {
-        case ServerMessage.PayloadOneofCase.BootNotificationResponse:
-            var bootResponse = reply.BootNotificationResponse;
-            Console.WriteLine(
-                $"Boot {bootResponse.Status}, heartbeat interval {bootResponse.HeartbeatIntervalSeconds} s, " +
-                $"gateway time {bootResponse.CurrentTime.ToDateTimeOffset()}");
-            break;
-        case ServerMessage.PayloadOneofCase.Error:
-            Console.WriteLine($"Gateway refused the message: {reply.Error.Code}");
-            break;
-        default:
-            Console.WriteLine($"Unexpected reply: {reply.PayloadCase}");
-            break;
-    }
+    var bootResponse = await BootAsync(call);
+    Console.WriteLine($"Station accepted, heartbeat interval {bootResponse.HeartbeatIntervalSeconds} s");
 
     await call.RequestStream.CompleteAsync();
     var hasMore = await call.ResponseStream.MoveNext(CancellationToken.None);
     Console.WriteLine($"More messages after close: {hasMore}");
     Console.WriteLine($"Call finished with status {call.GetStatus().StatusCode}");
 }
+
 catch (RpcException ex)
 {
     Console.WriteLine($"Call failed: {ex.StatusCode}, {ex.Status.Detail}");
@@ -81,4 +57,46 @@ async Task<ServerMessage> SendAsync(
     }
     
     return reply;
+}
+async Task<BootNotificationResponse> BootAsync(
+    AsyncDuplexStreamingCall<StationMessage, ServerMessage> call)
+{
+    var bootMessage = new StationMessage
+    {
+        BootNotification = new BootNotification
+        {
+            Model = StationModel,
+            SerialNumber = StationSerialNumber,
+            FirmwareVersion = StationFirmwareVersion
+        }
+    };
+
+    while (true)
+    {
+        var reply = await SendAsync(call, bootMessage);
+
+        if (reply.PayloadCase != ServerMessage.PayloadOneofCase.BootNotificationResponse)
+        {
+            throw new InvalidOperationException($"Unexpected reply: {reply.PayloadCase}");
+        }
+
+        var bootResponse = reply.BootNotificationResponse;
+        Console.WriteLine($"Boot {bootResponse.Status}, interval {bootResponse.HeartbeatIntervalSeconds} s");
+
+        switch (bootResponse.Status)
+        {
+            case RegistrationStatus.Accepted:
+                return bootResponse;
+
+            case RegistrationStatus.Pending:
+            case RegistrationStatus.Rejected:
+                var retryAfterSeconds = Math.Max(bootResponse.HeartbeatIntervalSeconds, MinBootRetrySeconds); 
+                Console.WriteLine($"Retrying boot in {retryAfterSeconds} s");
+                await Task.Delay(TimeSpan.FromSeconds(retryAfterSeconds));
+                break;
+
+            default:
+                throw new InvalidOperationException($"Unexpected boot status: {bootResponse.Status}");
+        }
+    }
 }
