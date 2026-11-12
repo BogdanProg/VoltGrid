@@ -217,3 +217,55 @@ operator's price, and stations are not authenticated.
   The simulator implements this from stage 3.1.
 - OCPP connector 0 (status of the whole station) is not supported and is
   logged as an unknown connector.
+
+---
+
+## 8. Station behaviour: the Gateway decides, the station waits, retries and fails loudly
+
+**Date:** 2026-11-12 (stage 3.1)
+
+**Context.** Decisions 5–7 only work if the station reacts correctly. A
+rejected station must retry boot, so it recovers once the operator fixes the
+data. A `Pending` station must retry until the database is back. A status that
+Gateway could not store must be resent. The simulator is the first
+implementation of the station side. It sends one message at a time over the
+stream, and Gateway only replies, never sends first.
+
+**Decision.**
+- Every message goes through one `SendAsync`: the next `message_id` from a
+  per-process counter, write, wait for the reply for at most 35 s, check that
+  the reply carries the same `message_id`.
+- The reply timeout (35 s) is longer than the EF `CommandTimeout` in Gateway
+  (30 s), so a `Pending` caused by a hung database reaches the station before
+  the station gives up. A timeout cancels the whole call (`Cancelled`).
+- Boot: `Accepted` → continue; `Pending` / `Rejected` → wait
+  `max(heartbeat_interval_seconds, 25 s)`, then boot again with a new
+  `message_id`.
+- After `Accepted` the station sends `StatusNotification` for every connector.
+  `RETRY_LATER` → resend the same status after 15 s.
+- Protocol violations (reply id mismatch, wrong reply type, unknown boot
+  status, `NOT_ACCEPTED` after an accepted boot in the same stream) throw
+  `InvalidOperationException` and crash the simulator.
+- No separate read loop: the station writes one message and reads its reply.
+
+**Reasoning.** The server decides and the station executes; OCPP splits the
+work the same way. Only the station can wait, and after a reboot only the
+station knows the real state of its sockets. The retry interval comes from
+Gateway, so the operator can change it without touching stations. The 25 s
+floor protects Gateway from a station that receives 0 (a bug or an unset
+field) and would otherwise boot in a tight loop. A status is sent once per
+change, so a lost one leaves the map wrong until the next change; resending
+after 15 s fixes the map soon after the database recovers. A new `message_id`
+per attempt keeps every request distinguishable in the logs. Crashing on a
+protocol violation is right for a developer tool: the bug shows on the first
+run. A separate read loop solves nothing while Gateway never sends first.
+
+**Cost.**
+- The simulator is not firmware: a real station would log a protocol
+  violation and reconnect instead of crashing.
+- The 25 s floor overrides a Gateway that asks for a shorter boot retry.
+- After a database outage, many stations resend statuses every 15 s and hit
+  the recovering database together; jitter is planned for stage 10.3.
+- While a status waits for a retry, the map shows the old status.
+- The station cannot react to a message Gateway sends first; a read loop is
+  needed by stage 9.3 (`RemoteStartTransaction`) at the latest.

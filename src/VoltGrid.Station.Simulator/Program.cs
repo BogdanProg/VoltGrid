@@ -9,6 +9,8 @@ const string StationSerialNumber = "123";
 const string StationFirmwareVersion = "1.0.5";
 const int ReplyTimeoutSeconds = 35; 
 const int MinBootRetrySeconds = 25;
+const int StatusRetrySeconds = 15;
+int[] connectorNumbers = [1, 2];
 
 var lastMessageId = 0;
 
@@ -23,7 +25,12 @@ try
 
     var bootResponse = await BootAsync(call);
     Console.WriteLine($"Station accepted, heartbeat interval {bootResponse.HeartbeatIntervalSeconds} s");
-
+    
+    foreach (var connectorNumber in connectorNumbers)
+    {
+        await ReportStatusAsync(call, connectorNumber, ConnectorSentStatus.Available);
+    }   
+    
     await call.RequestStream.CompleteAsync();
     var hasMore = await call.ResponseStream.MoveNext(CancellationToken.None);
     Console.WriteLine($"More messages after close: {hasMore}");
@@ -97,6 +104,41 @@ async Task<BootNotificationResponse> BootAsync(
 
             default:
                 throw new InvalidOperationException($"Unexpected boot status: {bootResponse.Status}");
+        }
+    }
+}
+async Task ReportStatusAsync(
+    AsyncDuplexStreamingCall<StationMessage, ServerMessage> call,
+    int connectorNumber,
+    ConnectorSentStatus status)
+{
+    var statusMessage = new StationMessage
+    {
+        StatusNotification = new StatusNotification
+        {
+            ConnectorNumber = connectorNumber,
+            ConnectorStatus = status
+        }
+    };
+
+    while (true)
+    {
+        var reply = await SendAsync(call, statusMessage);
+
+        if (reply.PayloadCase == ServerMessage.PayloadOneofCase.StatusNotificationResponse)
+        {
+            Console.WriteLine($"Connector {connectorNumber}: status {status} accepted");
+            return;
+        }
+        else if (reply.PayloadCase == ServerMessage.PayloadOneofCase.Error && reply.Error.Code == ErrorCode.RetryLater)
+        {
+            Console.WriteLine($"Connector {connectorNumber}: retry later, waiting {StatusRetrySeconds} s");
+            await Task.Delay(TimeSpan.FromSeconds(StatusRetrySeconds));
+        }
+        else
+        {
+            throw new InvalidOperationException(
+                $"Unexpected reply to status of connector {connectorNumber}: {reply}");
         }
     }
 }
