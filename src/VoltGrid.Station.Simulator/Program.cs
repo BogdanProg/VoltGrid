@@ -9,6 +9,7 @@ const string StationSerialNumber = "123";
 const string StationFirmwareVersion = "1.0.5";
 const int ReplyTimeoutSeconds = 35; 
 const int MinBootRetrySeconds = 25;
+const int MinHeartbeatIntervalSeconds = 5;
 const int StatusRetrySeconds = 15;
 int[] connectorNumbers = [1, 2];
 
@@ -24,17 +25,15 @@ try
     Console.WriteLine("Call opened");
 
     var bootResponse = await BootAsync(call);
-    Console.WriteLine($"Station accepted, heartbeat interval {bootResponse.HeartbeatIntervalSeconds} s");
+    Console.WriteLine("Station accepted");
     
     foreach (var connectorNumber in connectorNumbers)
     {
         await ReportStatusAsync(call, connectorNumber, ConnectorSentStatus.Available);
     }   
-    
-    await call.RequestStream.CompleteAsync();
-    var hasMore = await call.ResponseStream.MoveNext(CancellationToken.None);
-    Console.WriteLine($"More messages after close: {hasMore}");
-    Console.WriteLine($"Call finished with status {call.GetStatus().StatusCode}");
+    var heartbeatIntervalSeconds = Math.Max( bootResponse.HeartbeatIntervalSeconds , MinHeartbeatIntervalSeconds);
+    Console.WriteLine($"Heartbeat every {heartbeatIntervalSeconds} s");
+    await HeartbeatLoopAsync(call, heartbeatIntervalSeconds);
 }
 
 catch (RpcException ex)
@@ -104,6 +103,28 @@ async Task<BootNotificationResponse> BootAsync(
 
             default:
                 throw new InvalidOperationException($"Unexpected boot status: {bootResponse.Status}");
+        }
+    }
+}
+async Task HeartbeatLoopAsync(
+    AsyncDuplexStreamingCall<StationMessage, ServerMessage> call,
+    int heartbeatIntervalSeconds)
+{
+    var heartbeatMessage = new StationMessage { Heartbeat = new Heartbeat() };
+
+    while (true)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(heartbeatIntervalSeconds));
+
+        var reply = await SendAsync(call, heartbeatMessage);
+
+        if (reply.PayloadCase == ServerMessage.PayloadOneofCase.HeartbeatResponse)
+        {
+            Console.WriteLine($"Heartbeat response {reply.HeartbeatResponse.CurrentTime.ToDateTimeOffset()}");
+        }
+        else
+        {
+            throw new InvalidOperationException($"Unexpected reply to heartbeat response {reply}");
         }
     }
 }
