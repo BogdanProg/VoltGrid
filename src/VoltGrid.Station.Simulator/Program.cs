@@ -3,42 +3,69 @@ using Grpc.Net.Client;
 using VoltGrid.Contracts.Station.V1;
 
 const string GatewayAddress = "http://localhost:5205";
+
 const string StationId = "ST-001";
+
 const string StationModel = "Plus";
+
 const string StationSerialNumber = "123";
+
 const string StationFirmwareVersion = "1.0.5";
+
 const int ReplyTimeoutSeconds = 35; 
+
 const int MinBootRetrySeconds = 25;
+
 const int MinHeartbeatIntervalSeconds = 5;
+
 const int StatusRetrySeconds = 15;
+
+const int ReconnectDelaySeconds = 5;
+
 int[] connectorNumbers = [1, 2];
 
 var lastMessageId = 0;
 
 using var channel = GrpcChannel.ForAddress(GatewayAddress);
+
 var client = new StationLink.StationLinkClient(channel);
 
-try
-{
-    var headers = new Metadata { { "station-id", StationId } };
-    using var call = client.Connect(headers);
-    Console.WriteLine("Call opened");
+var headers = new Metadata { { "station-id", StationId } };
 
-    var bootResponse = await BootAsync(call);
-    Console.WriteLine("Station accepted");
+while (true)
+{
+    try
+    {   
+        Console.WriteLine($"Connecting at {DateTime.UtcNow}");
+        using var call = client.Connect(headers);
+        var bootResponse = await BootAsync(call);
+        Console.WriteLine("Station accepted");
     
-    foreach (var connectorNumber in connectorNumbers)
+        foreach (var connectorNumber in connectorNumbers)
+        {
+            await ReportStatusAsync(call, connectorNumber, ConnectorSentStatus.Available);
+        }   
+        var heartbeatIntervalSeconds = Math.Max( bootResponse.HeartbeatIntervalSeconds , MinHeartbeatIntervalSeconds);
+        Console.WriteLine($"Heartbeat every {heartbeatIntervalSeconds} s");
+        await HeartbeatLoopAsync(call, heartbeatIntervalSeconds);
+    }
+    catch (IOException ex)
     {
-        await ReportStatusAsync(call, connectorNumber, ConnectorSentStatus.Available);
-    }   
-    var heartbeatIntervalSeconds = Math.Max( bootResponse.HeartbeatIntervalSeconds , MinHeartbeatIntervalSeconds);
-    Console.WriteLine($"Heartbeat every {heartbeatIntervalSeconds} s");
-    await HeartbeatLoopAsync(call, heartbeatIntervalSeconds);
-}
-
-catch (RpcException ex)
-{
-    Console.WriteLine($"Call failed: {ex.StatusCode}, {ex.Status.Detail}");
+        Console.WriteLine($"{DateTime.Now:HH:mm:ss} : Connection lost: {ex.GetType().Name} : {ex.Message}");
+    }
+    
+    catch (RpcException ex) when (ex.StatusCode is StatusCode.Unavailable or StatusCode.Cancelled or StatusCode.Unknown)
+    {
+        Console.WriteLine($"{ex.StatusCode}, {ex.Status.Detail}");
+    }
+    
+    catch (RpcException ex) when (ex.StatusCode == StatusCode.Unauthenticated)
+    {
+        Console.WriteLine($"{DateTime.Now:HH:mm:ss}, {ex.Status.Detail}");
+        return;
+    }
+    
+    await Task.Delay(TimeSpan.FromSeconds(ReconnectDelaySeconds));
 }
 
 async Task<ServerMessage> SendAsync(
@@ -48,7 +75,7 @@ async Task<ServerMessage> SendAsync(
     var messageId =  ++lastMessageId;
     message.MessageId = messageId.ToString();
     await call.RequestStream.WriteAsync(message);
-    Console.WriteLine($"Sent message {messageId}: {message.PayloadCase}");
+    Console.WriteLine($"{DateTime.Now:HH:mm:ss} : Sent message {messageId}: {message.PayloadCase}");
     using var timeout =  new CancellationTokenSource(TimeSpan.FromSeconds(ReplyTimeoutSeconds));
     var hasReply = await call.ResponseStream.MoveNext(timeout.Token);
     if (!hasReply)
