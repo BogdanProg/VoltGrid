@@ -11,12 +11,14 @@ const int ReplyTimeoutSeconds = 35;
 const int MinBootRetrySeconds = 25;
 const int MinHeartbeatIntervalSeconds = 5;
 const int StatusRetrySeconds = 15;
-const int ReconnectDelaySeconds = 5;
+const int ReconnectBaseDelaySeconds = 1;
+const int ReconnectMaxDelaySeconds = 60;
 int[] connectorNumbers = [1, 2];
 
 var lastMessageId = 0;
 var accepted = false;
 var heartbeatIntervalSeconds = MinHeartbeatIntervalSeconds;
+var reconnectAttempt = 0;
 
 using var channel = GrpcChannel.ForAddress(GatewayAddress);
 var client = new StationLink.StationLinkClient(channel);
@@ -44,14 +46,15 @@ while (true)
                 }
                 else
                 {
-                    Log($"Reconnected without boot, heartbeat every {heartbeatIntervalSeconds} s");
+                    Log($"Already accepted, skipping boot, heartbeat every {heartbeatIntervalSeconds} s");
                 }
 
                 foreach (var connectorNumber in connectorNumbers)
                 {
                     await ReportStatusAsync(call, connectorNumber, ConnectorSentStatus.Available);
                 }
-
+                
+                reconnectAttempt = 0;
                 await HeartbeatLoopAsync(call, heartbeatIntervalSeconds);
             }
             catch (StationNotAcceptedException ex) when (!bootedInThisCall)
@@ -75,10 +78,20 @@ while (true)
         return;
     }
 
-    await Task.Delay(TimeSpan.FromSeconds(ReconnectDelaySeconds));
+    reconnectAttempt++;
+    var delay = ReconnectDelay(reconnectAttempt);
+    Log($"Reconnecting in {delay.TotalSeconds:F1} s (attempt {reconnectAttempt})");
+    await Task.Delay(delay);
 }
 
 void Log(string message) => Console.WriteLine($"{DateTime.UtcNow:HH:mm:ss} : {message}");
+
+TimeSpan ReconnectDelay(int attempt)
+{
+    var exponential = Math.Min(ReconnectMaxDelaySeconds, ReconnectBaseDelaySeconds * Math.Pow(2, attempt - 1));
+    var seconds = exponential / 2 + Random.Shared.NextDouble() * exponential / 2;
+    return TimeSpan.FromSeconds(seconds);
+}
 
 async Task<ServerMessage> SendAsync(
     AsyncDuplexStreamingCall<StationMessage, ServerMessage> call,
