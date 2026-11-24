@@ -1,9 +1,3 @@
-# DECISIONS
-
-Key architectural decisions with reasoning. Format: context → decision → cost.
-
----
-
 ## 1. Station identifier is a string, not a Guid
 
 **Date:** 2026-09-09 (stage 1.1)
@@ -269,3 +263,78 @@ run. A separate read loop solves nothing while Gateway never sends first.
 - While a status waits for a retry, the map shows the old status.
 - The station cannot react to a message Gateway sends first; a read loop is
   needed by stage 9.3 (`RemoteStartTransaction`) at the latest.
+
+---
+
+## 9. Station reconnects by itself: backoff with jitter, no boot after a dropped connection
+
+**Date:** 2026-11-24 (stage 3.2)
+
+**Context.** A station's stream dies for reasons the station does not
+control: a Gateway deploy restarts the instance, Gateway crashes, LTE drops.
+Experiments showed that a stream dying mid-way arrives as a raw `IOException`
+/ `HttpIOException` from the HTTP/2 layer, while a failed connect arrives as
+`RpcException` `Unavailable`; the station notices only when it next writes,
+i.e. at its next heartbeat. A dead call cannot be revived, so the station
+needs a new one. Decision 4 says a reconnected station does not boot again,
+and one deploy drops every station of an instance at the same moment.
+
+**Decision.**
+- One `GrpcChannel` per process; every reconnect is a new `Connect` on it.
+- State lives at three levels: process (`lastMessageId`, `accepted`,
+  heartbeat interval, reconnect attempt counter), call (`bootedInThisCall`),
+  message.
+- Reconnect on `IOException` (including `HttpIOException`) and on
+  `RpcException` `Unavailable`, `Cancelled` (our 35 s reply timeout) and
+  `Unknown` (a Gateway bug, already logged by Gateway, decision 6). Exit on
+  `Unauthenticated`. Anything else, including protocol violations, crashes
+  the simulator (decision 8).
+- Delay before a reconnect: 1 s doubling to a cap of 60 s, with equal jitter
+  (half fixed, half random). The attempt counter resets only once the station
+  fully works again (boot or skipped boot done, statuses accepted), not after
+  `Connect` and not after any reply.
+- After a reconnect the station boots only if it has not been accepted in this
+  process; otherwise it sends the status of every connector and goes on with
+  heartbeats.
+- `NOT_ACCEPTED` on a status or a heartbeat in a stream without a boot: forget
+  the acceptance and boot again in the same stream (`Pending` retries happen
+  inside boot). `NOT_ACCEPTED` after a boot in the same stream stays a
+  protocol violation.
+- Heartbeat: a pause before each one, with the interval from boot and a 5 s
+  floor; the first heartbeat comes one interval after boot.
+- `message_id`: a per-process counter, a new id for every attempt. It is a
+  correlation id within one stream: unique there, not across reconnects or
+  restarts, and never an idempotency key.
+
+**Reasoning.** Only the station can restore the link: Gateway cannot open a
+stream to a station. Boot means "I was powered on"; booting after every
+dropped connection would rewrite `LastBootAt`, and an operator would see a
+station that rebooted 40 times a day without ever rebooting. Statuses are
+resent after every reconnect because a connector may have changed while the
+station was offline. With a fixed delay every station returns within the same
+few seconds after Gateway recovers (thundering herd); backoff cuts the number
+of attempts during a long outage and jitter spreads the return. gRPC's own
+channel backoff and the OCPP 2.0.1 `RetryBackOff*` settings follow the same
+recipe. The cap bounds how late a station returns after a long outage.
+Resetting the counter only when the station fully works protects a Gateway
+that crashes right after accepting a connection from being hit every second.
+`Unauthenticated` cannot be fixed by retrying, since `station-id` is a
+constant; crashing on `Unknown` would turn one Gateway bug into a
+network-wide outage. `message_id` cannot be an idempotency key: retries carry
+new ids, so a resent `StartTransaction` would look new, and a counter that
+restarts at 1 after a reboot would make a new message look like an old one.
+Idempotency keys must name the operation and be created where the operation
+starts (`transactionId` at stage 5.5, `commandId` at stage 10.1).
+
+**Cost.**
+- A station notices a dead Gateway only at its next heartbeat, up to 30 s
+  later; a read loop (stage 4 / 9.3) would notice at once.
+- After a long outage a station may return up to 60 s after Gateway recovers.
+- Boot retry after `Pending` (30 s) and status retry after `RETRY_LATER`
+  (15 s) are still fixed; jitter for them is planned for stage 10.3.
+- Every reconnect resends every status, which adds writes; the simulator
+  always reports `Available` until stage 4.
+- The same `message_id` appears many times in Gateway logs across restarts;
+  telling those lines apart is left to trace ids (stage 14).
+- Correctness still depends on the station behaving as described; a real
+  firmware would log protocol violations and reconnect instead of crashing.

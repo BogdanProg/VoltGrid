@@ -1,15 +1,12 @@
 # PROGRESS
 
 ## Current stage
-Stage 3.2 — simulator: heartbeat loop, reconnect with backoff
+Refactoring before stage 4, no change in behaviour (agreed at the end of stage 3.2):
+- [ ] Simulator: `SimulatedStation` class with its own state and `RunAsync`, `StationOptions` record, `Program.cs` only wires things up
+- [ ] Gateway: `StationLinkService` keeps only the transport (headers, read loop, dispatch by `PayloadCase`, reply, disconnect); per-stream state in `StreamState`; one handler per message (`BootNotificationHandler`, `HeartbeatHandler`, `StatusNotificationHandler`); one method for "database unavailable"
+- [ ] Re-run the 3.1 and 3.2 scenarios by hand, separate commit
 
-Steps:
-- [x] 1. Heartbeat loop with the interval from `BootNotificationResponse`
-- [x] 2. Experiment: what the station sees when Gateway dies (Ctrl+C, `kill -9`)
-- [x] 3a. Reconnect loop with a fixed 5 s delay; `Unauthenticated` → exit
-- [x] 3b. Reconnect without boot; `NOT_ACCEPTED` → boot again in the same stream
-- [ ] 4. Exponential backoff with jitter instead of the fixed delay
-- [ ] 5. `message_id` strategy, acceptance scenarios, decision 9, PROGRESS
+Then stage 4.1 — `Authorize`, RFID tag check. Session logic of stage 4 goes to `VoltGrid.Application`, not into the gRPC service.
 
 ## Done
 - [x] Stage 0.1 — solution skeleton, 7 projects, git
@@ -20,24 +17,27 @@ Steps:
 - [x] Stage 2.2 — bidirectional stream, `BootNotification`, admission policy, boot persisted to the database
 - [x] Stage 2.3 — `Heartbeat`, `StatusNotification`, message admission, behaviour on database outage
 - [x] Stage 3.1 — simulator: one station, `SendAsync` with timeout, boot retries, connector statuses
+- [x] Stage 3.2 — simulator: heartbeat loop, reconnect with backoff and jitter, reconnect without boot, boot again after `NOT_ACCEPTED` (decision 9)
 
 ## Last working state
-Stage 3.2, steps 1–3b are done and committed (`103703e`). The station survives a Gateway restart (graceful and `kill -9`) and a Gateway restart during a database outage, with no manual action.
+Stage 3.2 is closed (decision 9 in `DECISIONS.md`). The station survives a Gateway restart (graceful and `kill -9`) and a Gateway restart during a database outage, with no manual action.
 
 `Station.Simulator` (`Program.cs`, top-level statements):
-- station constants (`ST-001`, Plus, 123, 1.0.5); `ReplyTimeoutSeconds` = 35, `MinBootRetrySeconds` = 25, `MinHeartbeatIntervalSeconds` = 5, `StatusRetrySeconds` = 15, `ReconnectDelaySeconds` = 5; connectors `[1, 2]`;
+- station constants (`ST-001`, Plus, 123, 1.0.5); `ReplyTimeoutSeconds` = 35, `MinBootRetrySeconds` = 25, `MinHeartbeatIntervalSeconds` = 5, `StatusRetrySeconds` = 15, `ReconnectBaseDelaySeconds` = 1, `ReconnectMaxDelaySeconds` = 60; connectors `[1, 2]`;
 - state at three levels:
-    - process (survives reconnects): `lastMessageId`, `accepted` (the last boot in this process ended with `Accepted`), `heartbeatIntervalSeconds` (saved at `Accepted`);
-    - call: `bootedInThisCall`, reset after every `Connect`;
-    - message: everything inside `SendAsync`;
+  - process (survives reconnects): `lastMessageId`, `accepted` (the last boot in this process ended with `Accepted`), `heartbeatIntervalSeconds` (saved at `Accepted`), `reconnectAttempt` (failed attempts in a row);
+  - call: `bootedInThisCall`, reset after every `Connect`;
+  - message: everything inside `SendAsync`;
 - one `GrpcChannel` and one client per process; every reconnect is a new `Connect` on the same channel;
-- outer loop = one call: `Connect` → inner loop; on a reconnectable failure log one line, wait 5 s, open a new call;
-- inner loop = one admission attempt in the same call: not `accepted` → `BootAsync`; statuses of all connectors (after a boot and after a reconnect without boot); `HeartbeatLoopAsync`;
+- outer loop = one call: `Connect` → inner loop; on a reconnectable failure log one line, wait `ReconnectDelay(++reconnectAttempt)`, open a new call;
+- `ReconnectDelay(attempt)`: 1, 2, 4 … s, capped at 60 s, with equal jitter (half fixed, half random), so the shortest delay is 0.5 s; `reconnectAttempt` resets to 0 only once the station fully works again (boot or skipped boot done, statuses accepted), not after `Connect` (lazy) and not after any reply;
+- inner loop = one admission attempt in the same call: not `accepted` → `BootAsync`; statuses of all connectors (after a boot and after a reconnect without boot, log "Already accepted, skipping boot"); `HeartbeatLoopAsync`;
 - `NOT_ACCEPTED` on a status or a heartbeat → `StationNotAcceptedException`; caught only `when (!bootedInThisCall)` → `accepted = false` → boot again in the same stream (`Pending` retries happen inside `BootAsync`); after a boot in the same stream it is a protocol violation and crashes the simulator (decision 8);
 - outer loop errors: `IOException` (including `HttpIOException`) and `RpcException` `Unavailable` / `Cancelled` / `Unknown` → reconnect; `Unauthenticated` → log and exit; anything else (e.g. `InvalidOperationException`) → crash with a stack trace;
 - `HeartbeatLoopAsync(call, intervalSeconds)`: `Task.Delay` before each heartbeat (the first one comes an interval after boot, since boot already records `LastHeartbeat`); `HeartbeatResponse` → log the server time; never returns normally;
 - `SendAsync`, `BootAsync`, `ReportStatusAsync` work as in 3.1; `ReportStatusAsync` also throws `StationNotAcceptedException` on `NOT_ACCEPTED`;
-- `Log(message)`: one log format for the whole simulator, `HH:mm:ss` UTC.
+- `Log(message)`: one log format for the whole simulator, `HH:mm:ss` UTC;
+- `message_id`: per-process counter, a new id for every attempt; a correlation id within one stream only, never an idempotency key (decision 9).
 
 Verified in 3.2:
 - heartbeat every 30 s; `LastHeartbeat` updates in the database;
@@ -46,7 +46,8 @@ Verified in 3.2:
 - reconnect without boot → statuses and heartbeat, no `BootNotification` in Gateway, `LastBootAt` unchanged;
 - Gateway restart with Postgres stopped → status gets `NOT_ACCEPTED` → boot in the same stream → `Pending` every 30 s → Postgres started → `Accepted` → statuses → heartbeat, with no new `Connecting`; `LastBootAt` updated;
 - simulator restart → boot (new process, `accepted = false`);
-- `station-id` header missing → `Unauthenticated`, the simulator exits.
+- `station-id` header missing → `Unauthenticated`, the simulator exits;
+- backoff: with Gateway down the delays grow (≈0.5–1, 1–2, 2–4 … s) up to 60 s; once the station works again, the next failure starts from attempt 1.
 
 Findings from the 3.2 experiments:
 - A connection that dies mid-stream arrives as a raw `IOException` / `HttpIOException` from the HTTP/2 layer, not as `RpcException`; only a failed connect gives `RpcException` `Unavailable`.
@@ -54,8 +55,8 @@ Findings from the 3.2 experiments:
 - `client.Connect` is lazy: the HTTP/2 request leaves with the first `WriteAsync`. That is why `Unauthenticated` arrives on `MoveNext`, and why a log line right after `Connect` cannot claim the station is connected.
 - Ctrl+C on Gateway waits for `HostOptions.ShutdownTimeout` (30 s), because `Connect` never completes on its own; streams keep working meanwhile and are then aborted all at once. Input for stage 10.5 (graceful shutdown, draining streams).
 - `kill -9` skips the `finally` in `Connect`, so no cleanup runs. Once the Redis registry exists, its entry would stay behind. Input for stage 9.5 (TTL, lease).
-- `message_id` gaps: the counter increments before `WriteAsync`, so failed sends consume ids (Gateway saw 5 → 13 after a restart); after a simulator restart the ids start again from 1. Input for step 5.
-- With a fixed 5 s delay every station comes back within the same 5 s after Gateway recovers (thundering herd). Input for step 4.
+- `message_id` gaps: the counter increments before `WriteAsync`, so failed sends consume ids (Gateway saw 5 → 13 after a restart); after a simulator restart the ids start again from 1. Decided in decision 9: `message_id` is a correlation id within a stream, not an idempotency key.
+- With a fixed 5 s delay every station comes back within the same 5 s after Gateway recovers (thundering herd). Fixed in step 4 with backoff and jitter.
 
 Verified in 3.1:
 - Gateway running → `Accepted`, call status `OK`, boot recorded in the database;
@@ -98,11 +99,8 @@ grpcurl -plaintext -import-path src/VoltGrid.Contracts/Protos -proto station_lin
 {"messageId": "2", "heartbeat": {}}
 {"messageId": "3", "statusNotification": {"connectorNumber": 2, "connectorStatus": "CONNECTOR_SENT_STATUS_OCCUPIED"}}
 
-Next: stage 3.2, step 4 (exponential backoff with jitter: growing delay, a cap, reset after a successful connection), then step 5:
-- `message_id` strategy (per-process counter vs `Guid.CreateVersion7()`);
-- acceptance scenarios for the whole stage;
-- decision 9 in `DECISIONS.md` (reconnect behaviour, the three state levels, which errors reconnect and which exit, handling of `NOT_ACCEPTED`).
-  A separate read loop in the simulator is needed once Gateway starts sending commands itself (stage 9.3) or once the station has two independent message flows (stage 4).
+Next: the refactoring above, then stage 4.1.
+A separate read loop in the simulator is needed once the station has two independent message flows (stage 4: meter values during a session next to heartbeats) or once Gateway starts sending commands itself (stage 9.3).
 
 ## Technical debt
 - Central Package Management (`Directory.Packages.props`): one version of each package for the whole solution; fixes the EF and gRPC version drift
@@ -125,5 +123,6 @@ Next: stage 3.2, step 4 (exponential backoff with jitter: growing delay, a cap, 
 - `RecordConnectorStatusAsync` loads the station even when admission is known from the stream (extra `SELECT`)
 - A client disconnect produces two entries: `Error reading message` with a stack trace from `Grpc.AspNetCore.Server`, and our Warning; tune that category's level at stage 14
 - Gateway: a client disconnect sometimes arrives as `OperationCanceledException` (`context.CancellationToken` cancelled) instead of `IOException`, escapes `Connect` and is logged as `fail` with a stack trace instead of a Warning (decision 6); handle together with stage 10.5
-- Simulator: the log line "Reconnected without boot" is printed before the connection exists (`Connect` is lazy); reword it to "Already accepted, skipping boot"
 - Simulator: after a reconnect every connector is reported as `Available` (a constant); real per-connector state is needed from stage 4
+- Boot retry after `Pending` (30 s) and status retry after `RETRY_LATER` (15 s) are still fixed; add jitter at stage 10.3
+- Logic placement (to revisit at stage 9): boot admission and heartbeat stay in Gateway (synchronous reply, no extra hop to `Charging.Api`); sessions, authorization and tariffs go to `Charging.Api`; statuses move to Kafka `station-events` at stage 7
