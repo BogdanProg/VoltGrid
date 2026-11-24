@@ -1,0 +1,235 @@
+using Grpc.Core;
+using VoltGrid.Contracts.Station.V1;
+
+namespace VoltGrid.Station.Simulator;
+
+public class SimulatedStation
+{
+    private const int ReplyTimeoutSeconds = 35;
+    private const int MinBootRetrySeconds = 25;
+    private const int MinHeartbeatIntervalSeconds = 5;
+    private const int StatusRetrySeconds = 15;
+    private const int ReconnectBaseDelaySeconds = 1;
+    private const int ReconnectMaxDelaySeconds = 60;
+
+    private readonly StationOptions _options;
+    private readonly StationLink.StationLinkClient _client;
+    private readonly Metadata _headers;
+    
+    private int _lastMessageId;
+    private bool _accepted;
+    private int _heartbeatIntervalSeconds = MinHeartbeatIntervalSeconds;
+    private int _reconnectAttempt;
+
+    public SimulatedStation(StationOptions options, StationLink.StationLinkClient client)
+    {
+        _options = options;
+        _client = client;
+        _headers = new Metadata { { "station-id", options.StationId } };
+    }
+    
+    public async Task RunAsync()
+    {
+        while (true)
+        {
+            try
+            {
+                Log("Connecting");
+                using var call = _client.Connect(_headers);
+                var bootedInThisCall = false;
+
+                while (true)
+                {
+                    try
+                    {
+                        if (!_accepted)
+                        {
+                            var bootResponse = await BootAsync(call);
+                            _heartbeatIntervalSeconds = Math.Max(bootResponse.HeartbeatIntervalSeconds, MinHeartbeatIntervalSeconds);
+                            _accepted = true;
+                            bootedInThisCall = true;
+                            Log($"Station accepted, heartbeat every {_heartbeatIntervalSeconds} s");
+                        }
+                        else
+                        {
+                            Log($"Already accepted, skipping boot, heartbeat every {_heartbeatIntervalSeconds} s");
+                        }
+
+                        foreach (var connectorNumber in _options.ConnectorNumbers)
+                        {
+                            await ReportStatusAsync(call, connectorNumber, ConnectorSentStatus.Available);
+                        }
+
+                        _reconnectAttempt = 0;
+                        await HeartbeatLoopAsync(call, _heartbeatIntervalSeconds);
+                    }
+                    catch (StationNotAcceptedException ex) when (!bootedInThisCall)
+                    {
+                        Log($"{ex.Message}, booting again");
+                        _accepted = false;
+                    }
+                }
+            }
+            catch (IOException ex)
+            {
+                Log($"Connection lost: {ex.GetType().Name}: {ex.Message}");
+            }
+            catch (RpcException ex) when (ex.StatusCode is StatusCode.Unavailable or StatusCode.Cancelled or StatusCode.Unknown)
+            {
+                Log($"Call failed: {ex.StatusCode}, {ex.Status.Detail}");
+            }
+            catch (RpcException ex) when (ex.StatusCode == StatusCode.Unauthenticated)
+            {
+                Log($"Gateway refused the station: {ex.Status.Detail}");
+                return;
+            }
+
+            _reconnectAttempt++;
+            var delay = ReconnectDelay(_reconnectAttempt);
+            Log($"Reconnecting in {delay.TotalSeconds:F1} s (attempt {_reconnectAttempt})");
+            await Task.Delay(delay);
+        }
+    }
+
+    private void Log(string message) => Console.WriteLine($"{DateTime.UtcNow:HH:mm:ss} {_options.StationId} : {message}");
+
+    private static TimeSpan ReconnectDelay(int attempt)
+    {
+        var exponential = Math.Min(ReconnectMaxDelaySeconds, ReconnectBaseDelaySeconds * Math.Pow(2, attempt - 1));
+        var seconds = exponential / 2 + Random.Shared.NextDouble() * exponential / 2;
+        return TimeSpan.FromSeconds(seconds);
+    }
+
+    private async Task<ServerMessage> SendAsync(
+        AsyncDuplexStreamingCall<StationMessage, ServerMessage> call,
+        StationMessage message)
+    {
+        var messageId = ++_lastMessageId;
+        message.MessageId = messageId.ToString();
+        await call.RequestStream.WriteAsync(message);
+        Log($"Sent message {messageId}: {message.PayloadCase}");
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(ReplyTimeoutSeconds));
+        var hasReply = await call.ResponseStream.MoveNext(timeout.Token);
+        if (!hasReply)
+        {
+            throw new RpcException(new Status(StatusCode.Unavailable, $"Gateway closed the stream without replying to message {messageId}"));
+        }
+
+        var reply = call.ResponseStream.Current;
+        if (reply.MessageId != message.MessageId)
+        {
+            throw new InvalidOperationException($"Reply id {reply.MessageId} does not match message id {message.MessageId}");
+        }
+
+        return reply;
+    }
+
+    private async Task<BootNotificationResponse> BootAsync(
+        AsyncDuplexStreamingCall<StationMessage, ServerMessage> call)
+    {
+        var bootMessage = new StationMessage
+        {
+            BootNotification = new BootNotification
+            {
+                Model = _options.Model,
+                SerialNumber = _options.SerialNumber,
+                FirmwareVersion = _options.FirmwareVersion
+            }
+        };
+
+        while (true)
+        {
+            var reply = await SendAsync(call, bootMessage);
+
+            if (reply.PayloadCase != ServerMessage.PayloadOneofCase.BootNotificationResponse)
+            {
+                throw new InvalidOperationException($"Unexpected reply to boot: {reply}");
+            }
+
+            var bootResponse = reply.BootNotificationResponse;
+            Log($"Boot {bootResponse.Status}, interval {bootResponse.HeartbeatIntervalSeconds} s");
+
+            switch (bootResponse.Status)
+            {
+                case RegistrationStatus.Accepted:
+                    return bootResponse;
+
+                case RegistrationStatus.Pending:
+                case RegistrationStatus.Rejected:
+                    var retryAfterSeconds = Math.Max(bootResponse.HeartbeatIntervalSeconds, MinBootRetrySeconds);
+                    Log($"Retrying boot in {retryAfterSeconds} s");
+                    await Task.Delay(TimeSpan.FromSeconds(retryAfterSeconds));
+                    break;
+
+                default:
+                    throw new InvalidOperationException($"Unexpected boot status: {bootResponse.Status}");
+            }
+        }
+    }
+
+    private async Task ReportStatusAsync(
+        AsyncDuplexStreamingCall<StationMessage, ServerMessage> call,
+        int connectorNumber,
+        ConnectorSentStatus status)
+    {
+        var statusMessage = new StationMessage
+        {
+            StatusNotification = new StatusNotification
+            {
+                ConnectorNumber = connectorNumber,
+                ConnectorStatus = status
+            }
+        };
+
+        while (true)
+        {
+            var reply = await SendAsync(call, statusMessage);
+
+            if (reply.PayloadCase == ServerMessage.PayloadOneofCase.StatusNotificationResponse)
+            {
+                Log($"Connector {connectorNumber}: status {status} accepted");
+                return;
+            }
+            else if (reply.PayloadCase == ServerMessage.PayloadOneofCase.Error && reply.Error.Code == ErrorCode.RetryLater)
+            {
+                Log($"Connector {connectorNumber}: retry later, waiting {StatusRetrySeconds} s");
+                await Task.Delay(TimeSpan.FromSeconds(StatusRetrySeconds));
+            }
+            else if (reply.PayloadCase == ServerMessage.PayloadOneofCase.Error && reply.Error.Code == ErrorCode.NotAccepted)
+            {
+                throw new StationNotAcceptedException($"Status of connector {connectorNumber} not accepted");
+            }
+            else
+            {
+                throw new InvalidOperationException($"Unexpected reply to status of connector {connectorNumber}: {reply}");
+            }
+        }
+    }
+
+    private async Task HeartbeatLoopAsync(
+        AsyncDuplexStreamingCall<StationMessage, ServerMessage> call,
+        int intervalSeconds)
+    {
+        var heartbeatMessage = new StationMessage { Heartbeat = new Heartbeat() };
+
+        while (true)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(intervalSeconds));
+            var reply = await SendAsync(call, heartbeatMessage);
+
+            if (reply.PayloadCase == ServerMessage.PayloadOneofCase.HeartbeatResponse)
+            {
+                Log($"Heartbeat accepted, server time {reply.HeartbeatResponse.CurrentTime.ToDateTimeOffset():HH:mm:ss}");
+            }
+            else if (reply.PayloadCase == ServerMessage.PayloadOneofCase.Error && reply.Error.Code == ErrorCode.NotAccepted)
+            {
+                throw new StationNotAcceptedException($"Heartbeat {reply.MessageId} not accepted");
+            }
+            else
+            {
+                throw new InvalidOperationException($"Unexpected reply to heartbeat: {reply}");
+            }
+        }
+    }
+}
