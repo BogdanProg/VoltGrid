@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using VoltGrid.Gateway;
+using VoltGrid.Gateway.Handlers;
 using VoltGrid.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -11,6 +12,9 @@ var connectionString = builder.Configuration.GetConnectionString("Postgres")
 builder.Services.AddDbContextFactory<VoltGridDbContext>(options =>
     options.UseNpgsql(connectionString));
 
+builder.Services.AddSingleton<BootNotificationHandler>();
+builder.Services.AddSingleton<HeartbeatHandler>();
+builder.Services.AddSingleton<StatusNotificationHandler>();
 
 var app = builder.Build();
 
