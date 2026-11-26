@@ -72,6 +72,8 @@ message BootNotification{
 
 message BootNotificationResponse{
   RegistrationStatus status = 1;
+  // ACCEPTED: send Heartbeat at this interval.
+  // PENDING / REJECTED: retry BootNotification after this delay.
   int32 heartbeat_interval_seconds = 2;
   google.protobuf.Timestamp current_time = 3;
 }
@@ -82,18 +84,23 @@ message HeartbeatResponse{
   google.protobuf.Timestamp current_time = 1;
 }
 
+// A driver presented a tag at the station: may it start charging?
 message Authorize {
+  // Tag UID as read by the station. Up to 20 characters, case-insensitive (OCPP idTag).
   string id_tag = 1;
 }
 
+// Business answer to Authorize. Station-level problems (not admitted, database down) come as ErrorResponse instead.
 message AuthorizeResponse {
   AuthorizationStatus status = 1;
 }
 
 enum AuthorizationStatus {
+  // Never sent on purpose: a reply without a status is a protocol violation, never an acceptance.
   AUTHORIZATION_STATUS_UNSPECIFIED = 0;
   AUTHORIZATION_STATUS_ACCEPTED = 1;
   AUTHORIZATION_STATUS_BLOCKED = 2;
   AUTHORIZATION_STATUS_EXPIRED = 3;
+  // Unknown tag or a malformed one (empty, longer than 20 characters).
   AUTHORIZATION_STATUS_INVALID = 4;
 }
