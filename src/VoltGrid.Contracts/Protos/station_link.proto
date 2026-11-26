@@ -16,6 +16,7 @@ message StationMessage{
     BootNotification boot_notification = 2;
     Heartbeat heartbeat = 3;
     StatusNotification status_notification = 4;
+    Authorize authorize = 5;
   }
 }
 
@@ -26,6 +27,7 @@ message ServerMessage{
     ErrorResponse error = 3;
     HeartbeatResponse heartbeat_response = 4;
     StatusNotificationResponse status_notification_response = 5;
+    AuthorizeResponse authorize_response = 6;
   }
 }
 
@@ -60,9 +62,7 @@ message StatusNotification{
   ConnectorSentStatus connector_status = 2;
 }
 
-message StatusNotificationResponse{
-  
-}
+message StatusNotificationResponse{}
 
 message BootNotification{
   string model = 1;
@@ -72,8 +72,6 @@ message BootNotification{
 
 message BootNotificationResponse{
   RegistrationStatus status = 1;
-  // ACCEPTED: send Heartbeat at this interval.
-  // PENDING / REJECTED: retry BootNotification after this delay.
   int32 heartbeat_interval_seconds = 2;
   google.protobuf.Timestamp current_time = 3;
 }
@@ -82,4 +80,20 @@ message Heartbeat{}
 
 message HeartbeatResponse{
   google.protobuf.Timestamp current_time = 1;
+}
+
+message Authorize {
+  string id_tag = 1;
+}
+
+message AuthorizeResponse {
+  AuthorizationStatus status = 1;
+}
+
+enum AuthorizationStatus {
+  AUTHORIZATION_STATUS_UNSPECIFIED = 0;
+  AUTHORIZATION_STATUS_ACCEPTED = 1;
+  AUTHORIZATION_STATUS_BLOCKED = 2;
+  AUTHORIZATION_STATUS_EXPIRED = 3;
+  AUTHORIZATION_STATUS_INVALID = 4;
 }

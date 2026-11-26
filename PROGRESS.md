@@ -139,3 +139,4 @@ A separate read loop in the simulator is needed once the station has two indepen
 - Boot retry after `Pending` (30 s) and status retry after `RETRY_LATER` (15 s) are still fixed; add jitter at stage 10.3
 - Logic placement (to revisit at stage 9): boot admission and heartbeat stay in Gateway (synchronous reply, no extra hop to `Charging.Api`); sessions, authorization and tariffs go to `Charging.Api`; statuses move to Kafka `station-events` at stage 7
 - Watchdog (stage 8.4): while the database is down `LastHeartbeat` is not updated; after an outage longer than the offline threshold a station may look offline until its next heartbeat (up to one interval)
+- Unit tests for the authorization rule (Blocked over Expired, expiry boundary, tag normalisation): stage 16
